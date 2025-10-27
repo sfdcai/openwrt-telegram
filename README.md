@@ -85,8 +85,9 @@ Edit `/opt/openwrt-telebot/config/config.json`:
 - `poll_timeout` – Long polling timeout in seconds.
 - `plugins_dir` – Directory containing executable shell plugins.
 - `log_file` – Log output file for the bot.
-- `ui_api_token` – Token required by the web UI API (store it locally in the
-  browser via the UI access panel).
+- `ui_api_token` – Optional token required by the web UI API. Leave it blank to
+  disable authentication or set a secret string and store it in the browser via
+  the UI access panel.
 - `ui_base_url` – Preferred base URL for the UI (informational).
 - `client_state_file` – JSON file that stores discovered clients and their
   approval status (defaults to `state/clients.json`).
@@ -113,8 +114,9 @@ in `config.json`.
 
 ## Web UI
 
-Visit `http://<router-ip>/telebot/` and enter the UI API token. The control
-panel allows you to:
+Visit `http://<router-ip>/telebot/`. If an API token is configured the page will
+highlight the token field until a valid value is saved. The control panel allows
+you to:
 
 - Inspect bot process status, uptime and disk usage.
 - Update Telegram credentials and bot configuration.
@@ -139,6 +141,19 @@ All operations are logged to the configured log file, and the CGI/UI layer will
 report errors back to the browser while appending stack traces to the log for
 easy troubleshooting.
 
+### Diagnose issues quickly
+
+Run the bundled diagnostic helper to capture configuration, service status,
+`nftables` health and web UI deployment details in a single report:
+
+```sh
+python3 scripts/diagnostics.py --config /opt/openwrt-telebot/config/config.json
+```
+
+Use the output to verify paths, confirm the init scripts are installed, and
+spot missing nftables sets or stale web assets without digging through multiple
+commands.
+
 ## Helpers and events
 
 - `helpers/tele-notify` – Shell helper to send quick messages using the bot
@@ -154,6 +169,7 @@ easy troubleshooting.
 - Validate Python files: `python3 -m py_compile bot/*.py www/cgi-bin/telebot.py`
 - Preview the UI locally: `scripts/preview_server.py --port 8081` and browse to
   <http://127.0.0.1:8081/>.
+- Capture environment health: `python3 scripts/diagnostics.py`.
 
 Pull requests are welcome – see the source for additional details.
 ### Generate a release ZIP locally

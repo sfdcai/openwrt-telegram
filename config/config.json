@@ -4,7 +4,7 @@
   "poll_timeout": 25,
   "plugins_dir": "/opt/openwrt-telebot/plugins",
   "log_file": "/var/log/openwrt-telebot.log",
-  "ui_api_token": "changeme",
+  "ui_api_token": "",
   "ui_base_url": "/telebot",
   "client_state_file": "/opt/openwrt-telebot/state/clients.json",
   "nft_table": "telebot",

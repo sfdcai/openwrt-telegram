@@ -140,6 +140,12 @@ body {
   font: inherit;
 }
 
+.form-grid input.input--highlight,
+.form-grid textarea.input--highlight {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.3);
+}
+
 .form-grid textarea {
   resize: vertical;
 }

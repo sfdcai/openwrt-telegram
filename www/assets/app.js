@@ -79,10 +79,24 @@
     if (!response.ok || !data.ok) {
       const message = data.error || response.statusText || 'Request failed';
       const enhanced = new Error(message);
+      enhanced.response = { status: response.status, body: data };
       console.error('API error', action, { status: response.status, data });
+      if (response.status === 401) {
+        handleUnauthorized(data);
+      }
       throw enhanced;
     }
     return data;
+  }
+
+  function handleUnauthorized(data) {
+    const hint = (data && data.hint) ? ` — ${data.hint}` : '';
+    showToast(`Unauthorized${hint}`, 'error');
+    if (elements.tokenInput) {
+      elements.tokenInput.classList.add('input--highlight');
+      elements.tokenInput.focus();
+      setTimeout(() => elements.tokenInput.classList.remove('input--highlight'), 1500);
+    }
   }
 
   function updateTokenInput() {

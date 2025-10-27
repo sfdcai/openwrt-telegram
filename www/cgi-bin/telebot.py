@@ -221,8 +221,20 @@ def main() -> None:
 
     query = parse_qs(os.environ.get("QUERY_STRING", ""))
     if not ensure_authenticated(cfg, query):
-        log("UI authentication failed", log_file, level="WARNING")
-        respond(401, {"ok": False, "error": "Unauthorized"})
+        expected = cfg.get("ui_api_token", "") or ""
+        log(
+            f"UI authentication failed (token configured={'yes' if expected else 'no'})",
+            log_file,
+            level="WARNING",
+        )
+        respond(
+            401,
+            {
+                "ok": False,
+                "error": "Unauthorized",
+                "hint": "Set the UI API token in config.json or supply it via the X-Auth-Token header or token query parameter.",
+            },
+        )
         return
 
     action = (query.get("action") or [""])[0]
