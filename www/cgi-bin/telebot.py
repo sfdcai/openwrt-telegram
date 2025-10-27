@@ -14,11 +14,14 @@ BASE_DIR = Path(os.environ.get("TELEBOT_BASE", "/opt/openwrt-telebot"))
 if not BASE_DIR.exists():
     BASE_DIR = Path(__file__).resolve().parents[2]
 CONFIG_PATH = Path(os.environ.get("TELEBOT_CONFIG", BASE_DIR / "config" / "config.json"))
+VERSION_PATH = BASE_DIR / "VERSION"
 
 sys.path.insert(0, str(BASE_DIR / "bot"))
 
 from config_manager import ConfigManager  # type: ignore  # pylint: disable=wrong-import-position
 from dispatcher import Dispatcher  # type: ignore  # pylint: disable=wrong-import-position
+from logger import log, log_exception  # type: ignore  # pylint: disable=wrong-import-position
+from router import RouterController  # type: ignore  # pylint: disable=wrong-import-position
 from telegram_api import TelegramAPI  # type: ignore  # pylint: disable=wrong-import-position
 
 
@@ -28,6 +31,17 @@ def respond(status: int, payload: Dict[str, Any]) -> None:
     sys.stdout.write("Content-Type: application/json\r\n\r\n")
     json.dump(payload, sys.stdout)
     sys.stdout.write("\n")
+
+
+def read_version() -> str:
+    try:
+        with VERSION_PATH.open("r", encoding="utf-8") as handle:
+            return handle.readline().strip() or "dev"
+    except FileNotFoundError:
+        return "dev"
+    except Exception as exc:  # pragma: no cover - defensive
+        log_exception("Failed to read VERSION file", exc, None)
+        return "dev"
 
 
 def read_body() -> Dict[str, Any]:
@@ -51,7 +65,7 @@ def ensure_authenticated(cfg: Dict[str, Any], query: Dict[str, list[str]]) -> bo
     return provided == expected
 
 
-def get_dispatcher(cfg: Dict[str, Any]) -> Dispatcher:
+def get_dispatcher(cfg: Dict[str, Any], router: RouterController | None = None) -> Dispatcher:
     plugins_dir = cfg.get("plugins_dir", str(BASE_DIR / "plugins"))
     log_file = cfg.get("log_file")
     if log_file:
@@ -59,9 +73,8 @@ def get_dispatcher(cfg: Dict[str, Any]) -> Dispatcher:
     dispatcher = Dispatcher(
         plugins_dir=plugins_dir,
         logger=lambda _m: None,
-        allowed_ids=cfg.get("allowed_user_ids", []),
-        admin_ids=cfg.get("admin_user_ids", []),
         default_chat=cfg.get("chat_id_default"),
+        router=router,
     )
     return dispatcher
 
@@ -130,7 +143,17 @@ def save_config(manager: ConfigManager, payload: Dict[str, Any]) -> Dict[str, An
     if token_value and token_value != current_mask:
         updated["bot_token"] = token_value
 
-    for key in ("plugins_dir", "log_file", "ui_api_token", "ui_base_url"):
+    for key in (
+        "plugins_dir",
+        "log_file",
+        "ui_api_token",
+        "ui_base_url",
+        "client_state_file",
+        "nft_table",
+        "nft_chain",
+        "nft_block_set",
+        "nft_allow_set",
+    ):
         if key in payload and payload[key] is not None:
             updated[key] = str(payload[key]).strip()
 
@@ -142,8 +165,16 @@ def save_config(manager: ConfigManager, payload: Dict[str, Any]) -> Dict[str, An
     else:
         updated["chat_id_default"] = None
 
-    updated["allowed_user_ids"] = ConfigManager.normalize_id_list(payload.get("allowed_user_ids"))
-    updated["admin_user_ids"] = ConfigManager.normalize_id_list(payload.get("admin_user_ids"))
+    whitelist_raw = payload.get("client_whitelist")
+    if whitelist_raw is not None:
+        if isinstance(whitelist_raw, list):
+            updated["client_whitelist"] = [str(item).strip() for item in whitelist_raw if str(item).strip()]
+        else:
+            updated["client_whitelist"] = [
+                item.strip()
+                for item in str(whitelist_raw).replace(";", ",").split(",")
+                if item.strip()
+            ]
 
     try:
         updated["poll_timeout"] = max(5, int(payload.get("poll_timeout", current.get("poll_timeout", 25))))
@@ -185,9 +216,12 @@ def main() -> None:
     except FileNotFoundError:
         respond(500, {"ok": False, "error": "config.json not found"})
         return
+    cfg.setdefault("base_dir", str(BASE_DIR))
+    log_file = cfg.get("log_file")
 
     query = parse_qs(os.environ.get("QUERY_STRING", ""))
     if not ensure_authenticated(cfg, query):
+        log("UI authentication failed", log_file, level="WARNING")
         respond(401, {"ok": False, "error": "Unauthorized"})
         return
 
@@ -199,9 +233,31 @@ def main() -> None:
     method = os.environ.get("REQUEST_METHOD", "GET").upper()
     payload = read_body() if method == "POST" else {}
 
+    router: RouterController | None = None
+    remote = os.environ.get("REMOTE_ADDR", "?")
+    log(f"UI {action} requested via {method} from {remote}", log_file, level="DEBUG")
+    try:
+        router = RouterController(
+            cfg,
+            logger=lambda message, logfile=None, level="INFO": log(message, log_file, level=level),
+        )
+        router.ensure_nft()
+    except Exception as exc:  # pragma: no cover - defensive
+        router = None
+        log_exception("Router controller init failed in UI", exc, log_file)
+
     try:
         if action == "status":
-            dispatcher = get_dispatcher(cfg)
+            dispatcher = get_dispatcher(cfg, router)
+            client_info = {"clients": [], "counts": {}}
+            if router:
+                refresh = router.refresh_clients()
+                client_info["clients"] = refresh.get("clients", [])
+                counts: Dict[str, int] = {}
+                for item in client_info["clients"]:
+                    status = item.get("status", "unknown")
+                    counts[status] = counts.get(status, 0) + 1
+                client_info["counts"] = counts
             response = {
                 "ok": True,
                 "bot": bot_status(),
@@ -209,6 +265,11 @@ def main() -> None:
                 "config": mask_config(cfg),
                 "plugins": dispatcher.available_plugins(),
                 "log_tail": read_logs(cfg.get("log_file")),
+                "clients": client_info,
+                "version": {
+                    "app": read_version(),
+                    "base_dir": str(BASE_DIR),
+                },
             }
             respond(200, response)
         elif action == "save_config":
@@ -234,6 +295,33 @@ def main() -> None:
             respond(200, {"ok": True, "output": output})
         elif action == "logs":
             respond(200, {"ok": True, "log_tail": read_logs(cfg.get("log_file"))})
+        elif action == "clients":
+            if not router:
+                raise RuntimeError("Router controller unavailable")
+            refresh = router.refresh_clients()
+            respond(200, {"ok": True, "clients": refresh.get("clients", [])})
+        elif action == "client_action":
+            if not router:
+                raise RuntimeError("Router controller unavailable")
+            client_action = payload.get("action")
+            target = payload.get("target")
+            if not client_action or not target:
+                raise RuntimeError("Client action and target are required")
+            if client_action == "approve":
+                client = router.approve(str(target))
+            elif client_action == "block":
+                client = router.block(str(target))
+            elif client_action == "whitelist":
+                client = router.whitelist(str(target))
+            elif client_action == "forget":
+                router.forget(str(target))
+                client = None
+            else:
+                raise RuntimeError("Unsupported client action")
+            result = {"ok": True}
+            if client:
+                result["client"] = client
+            respond(200, result)
         elif action == "control":
             command = payload.get("command")
             if command not in {"start", "stop", "restart", "reload"}:
@@ -243,6 +331,7 @@ def main() -> None:
         else:
             respond(400, {"ok": False, "error": f"Unknown action: {action}"})
     except Exception as exc:
+        log_exception(f"UI action {action} failed", exc, log_file)
         respond(400, {"ok": False, "error": str(exc)})
 
 
@@ -259,3 +348,4 @@ def shlex_split(value: Any) -> list[str]:
 
 if __name__ == "__main__":
     main()
+

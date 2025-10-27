@@ -3,14 +3,15 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+import time
 from pathlib import Path
-from typing import Callable, Iterable, List
+from typing import Callable, Iterable, List, Optional
+
+from router import RouterController
 
 MAX_MSG_LEN = 3900
 ADMIN_PLUGIN_NAMES = {"reboot", "poweroff"}
 
-MAX_MSG_LEN = 3900
-ADMIN_PLUGIN_NAMES = {"reboot", "poweroff"}
 
 class Dispatcher:
     """Translate incoming Telegram messages into actions."""
@@ -19,15 +20,13 @@ class Dispatcher:
         self,
         plugins_dir: str | os.PathLike[str],
         logger: Callable[[str], None],
-        allowed_ids: Iterable[int] | None = None,
-        admin_ids: Iterable[int] | None = None,
         default_chat: int | None = None,
+        router: Optional[RouterController] = None,
     ):
         self.plugins_dir = Path(plugins_dir)
         self.logger = logger
-        self.allowed = {int(i) for i in (allowed_ids or [])}
-        self.admins = {int(i) for i in (admin_ids or [])}
-        self.default_chat = default_chat
+        self.default_chat = int(default_chat) if default_chat is not None else None
+        self.router = router
         extra_admin_plugins = os.environ.get("TELEBOT_ADMIN_PLUGINS", "")
         self.admin_only_plugins = {
             name.strip().lower() for name in extra_admin_plugins.split(",") if name.strip()
@@ -42,6 +41,11 @@ class Dispatcher:
             "/run": self._cmd_run_plugin,
             "/log": self._cmd_log_tail,
             "/whoami": self._cmd_whoami,
+            "/clients": self._cmd_clients,
+            "/approve": self._cmd_approve,
+            "/block": self._cmd_block,
+            "/whitelist": self._cmd_whitelist,
+            "/forget": self._cmd_forget,
         }
 
     # ------------------------------------------------------------------
@@ -53,9 +57,14 @@ class Dispatcher:
             "/ping - simple heartbeat",
             "/status - system information",
             "/plugins - list available shell plugins",
-            "/run <plugin> [args] - execute a plugin (admins only)",
+            "/run <plugin> [args] - execute a plugin",
             "/log [lines] - tail the bot log",
             "/whoami - display your identifiers",
+            "/clients - list known devices",
+            "/approve <mac|ip> - allow a device",
+            "/block <mac|ip> - block a device",
+            "/whitelist <mac|ip> - always allow a device",
+            "/forget <mac> - remove device from registry",
         ]
         return ["\n".join(available + self._plugin_summary())]
 
@@ -84,7 +93,7 @@ class Dispatcher:
         return ["\n".join(lines)]
 
     def _cmd_run_plugin(self, user: int, chat: int, message: int, args: list[str]) -> List[str]:
-        if not self.is_admin(user):
+        if not self.is_admin(user, chat):
             return ["Admin only."]
         if not args:
             return ["Usage: /run <plugin> [args]"]
@@ -114,22 +123,55 @@ class Dispatcher:
             info.append(f"Default chat ID: {self.default_chat}")
         return ["\n".join(info)]
 
+    def _cmd_clients(self, user: int, chat: int, message: int, args: list[str]) -> List[str]:
+        if not self.router:
+            return ["Router controls are disabled in configuration."]
+        clients = self.router.list_clients()
+        if not clients:
+            return ["No clients have been discovered yet."]
+        lines = ["Known clients:"]
+        for client in clients:
+            lines.append(self._format_client_line(client))
+        return ["\n".join(lines)]
+
+    def _cmd_approve(self, user: int, chat: int, message: int, args: list[str]) -> List[str]:
+        return self._client_action(args, self.router.approve if self.router else None, "Usage: /approve <mac|ip>", "approved")
+
+    def _cmd_block(self, user: int, chat: int, message: int, args: list[str]) -> List[str]:
+        return self._client_action(args, self.router.block if self.router else None, "Usage: /block <mac|ip>", "blocked")
+
+    def _cmd_whitelist(self, user: int, chat: int, message: int, args: list[str]) -> List[str]:
+        return self._client_action(args, self.router.whitelist if self.router else None, "Usage: /whitelist <mac|ip>", "whitelisted")
+
+    def _cmd_forget(self, user: int, chat: int, message: int, args: list[str]) -> List[str]:
+        if not self.router:
+            return ["Router controls are disabled."]
+        if not args:
+            return ["Usage: /forget <mac>"]
+        target = args[0]
+        try:
+            self.router.forget(target)
+            return [f"Removed {target} from registry."]
+        except ValueError:
+            return ["Invalid MAC address"]
+        except Exception as exc:
+            return [f"Failed to remove: {exc}"]
+
     # ------------------------------------------------------------------
     # Public helpers used by both the bot loop and the UI API
 
-    def authorize(self, user_id: int) -> bool:
-        if not self.allowed and not self.admins:
+    def authorize(self, user_id: int, chat_id: int) -> bool:
+        if self.default_chat is None:
             return True
-        return user_id in self.allowed or user_id in self.admins
+        return chat_id == self.default_chat
 
-    def is_admin(self, user_id: int) -> bool:
-        if not self.admins:
-            return not self.allowed or user_id in self.allowed
-        return user_id in self.admins
+    def is_admin(self, user_id: int, chat_id: int) -> bool:
+        return self.authorize(user_id, chat_id)
 
     def handle(self, user_id: int, chat_id: int, message_id: int, text: str) -> List[str]:
-        if not self.authorize(user_id):
-            return ["Unauthorized user."]
+        if not self.authorize(user_id, chat_id):
+            self.logger(f"ignored message from {user_id}@{chat_id}: unauthorized chat")
+            return ["Unauthorized chat."]
         if not text:
             return []
         try:
@@ -146,12 +188,27 @@ class Dispatcher:
         else:
             plugin_name = cmd.lstrip("/")
             self.logger(f"plugin {cmd} from {user_id}")
-            if plugin_name.lower() in self.admin_only_plugins and not self.is_admin(user_id):
+            if plugin_name.lower() in self.admin_only_plugins and not self.is_admin(user_id, chat_id):
                 return ["Admin only."]
             response = self.execute_plugin(plugin_name, args, user_id, chat_id, message_id)
             if not response:
                 response = [f"Unknown command: {cmd}\n\nTry /help for a list of commands."]
         return self._chunk_responses(response)
+
+    def handle_callback(self, user_id: int, chat_id: int, message_id: int, data: str) -> dict[str, str]:
+        if not data:
+            return {"ack": "No action"}
+        if not self.authorize(user_id, chat_id):
+            return {"ack": "Unauthorized", "message": "Unauthorized chat."}
+        if data.startswith("client:"):
+            if not self.router:
+                return {"ack": "Router disabled"}
+            parts = data.split(":")
+            if len(parts) < 3:
+                return {"ack": "Malformed"}
+            action, mac = parts[1], parts[2]
+            return self._handle_client_callback(action, mac)
+        return {"ack": "Unknown action"}
 
     def available_plugins(self) -> list[dict[str, str]]:
         items: list[dict[str, str]] = []
@@ -218,6 +275,76 @@ class Dispatcher:
             else:
                 summary.append(f"  {label}")
         return summary
+
+    def _client_action(
+        self,
+        args: list[str],
+        handler: Optional[Callable[[str], dict]],
+        usage: str,
+        verb: str,
+    ) -> List[str]:
+        router = self.router
+        if handler is None or router is None:
+            return ["Router controls are disabled in configuration."]
+        if not args:
+            return [usage]
+        target = args[0]
+        try:
+            client = handler(target)
+        except ValueError:
+            return ["Invalid MAC address"]
+        except Exception as exc:  # pragma: no cover
+            return [f"Failed to update client: {exc}"]
+        return [f"{verb.capitalize()} {router.describe_client(client)}"]
+
+    def _handle_client_callback(self, action: str, mac: str) -> dict[str, str]:
+        router = self.router
+        handlers = {
+            "approve": (router.approve if router else None, "✅ Approved"),
+            "block": (router.block if router else None, "🚫 Blocked"),
+            "whitelist": (router.whitelist if router else None, "⭐ Whitelisted"),
+        }
+        handler, prefix = handlers.get(action, (None, ""))
+        if handler is None:
+            return {"ack": "Unsupported"}
+        try:
+            client = handler(mac)
+        except ValueError:
+            return {"ack": "Invalid"}
+        except Exception as exc:  # pragma: no cover
+            return {"ack": "Failed", "message": f"Failed to update client: {exc}"}
+        message = f"{prefix} {router.describe_client(client)}" if router else prefix.strip()
+        return {"ack": prefix.strip() or "Done", "message": message}
+
+    def _format_client_line(self, client: dict) -> str:
+        status = client.get("status", "unknown")
+        ip = client.get("ip") or "?"
+        hostname = client.get("hostname") or "(unknown)"
+        mac = client.get("mac")
+        seen = client.get("last_seen") or 0
+        online = client.get("online")
+        badge = {
+            "pending": "🟡",
+            "approved": "🟢",
+            "blocked": "🔴",
+            "whitelist": "⭐",
+        }.get(status, "•")
+        age = self._format_age(seen)
+        state = "online" if online else f"seen {age} ago"
+        return f"{badge} {hostname} {mac} {ip} — {status} ({state})"
+
+    @staticmethod
+    def _format_age(timestamp: int) -> str:
+        if not timestamp:
+            return "unknown"
+        delta = max(0, int(time.time()) - int(timestamp))
+        if delta < 60:
+            return f"{delta}s"
+        if delta < 3600:
+            return f"{delta // 60}m"
+        if delta < 86400:
+            return f"{delta // 3600}h"
+        return f"{delta // 86400}d"
 
     def _chunk_responses(self, responses: Iterable[str]) -> List[str]:
         chunks: List[str] = []

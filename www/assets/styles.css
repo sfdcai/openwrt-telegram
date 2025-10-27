@@ -40,6 +40,30 @@ body {
   margin-top: 0.5rem;
 }
 
+.hero__meta {
+  margin-top: 1rem;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 0.95rem;
+}
+
+.hero__badge {
+  background: rgba(56, 189, 248, 0.18);
+  color: #ecfeff;
+  padding: 0.25rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid rgba(56, 189, 248, 0.45);
+}
+
+.hero__path {
+  color: var(--muted);
+  font-family: "Fira Code", "SFMono-Regular", ui-monospace, SFMono-Regular,
+    Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
 .container {
   max-width: 1100px;
   margin: -2rem auto 3rem;
@@ -67,6 +91,7 @@ body {
   background: radial-gradient(circle at top right, rgba(56, 189, 248, 0.15), transparent 40%);
   opacity: 0;
   transition: opacity 0.3s ease;
+  pointer-events: none;
 }
 
 .card:hover::before {
@@ -173,6 +198,76 @@ body {
   overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.client-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 640px;
+}
+
+.client-table th,
+.client-table td {
+  padding: 0.75rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+  text-align: left;
+  font-size: 0.95rem;
+}
+
+.client-table th {
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  color: var(--color-muted);
+  background: rgba(148, 163, 184, 0.1);
+}
+
+.client-table td.actions {
+  white-space: nowrap;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.client-table .status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.status-pending {
+  background: #facc15;
+}
+
+.status-approved {
+  background: #4ade80;
+}
+
+.status-blocked {
+  background: #f87171;
+}
+
+.status-whitelist {
+  background: #fbbf24;
+}
+
+.client-table .empty {
+  text-align: center;
+  color: var(--color-muted);
+}
+
+.client-stats {
+  margin-bottom: 1rem;
+  color: var(--color-muted);
+  font-size: 0.95rem;
 }
 
 .plugin-grid {

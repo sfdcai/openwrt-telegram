@@ -13,12 +13,17 @@ from typing import Any, Dict
 
 from config_manager import ConfigManager
 from dispatcher import Dispatcher
-from logger import log
+from logger import log, log_exception
+from router import RouterController
 from telegram_api import TelegramAPI
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG = BASE_DIR / "config" / "config.json"
 RUNNING = True
+
+
+class AuthenticationError(RuntimeError):
+    """Raised when Telegram authentication fails."""
 
 
 def handle_signal(signum, _frame):
@@ -32,10 +37,8 @@ def load_configuration(path: Path) -> Dict[str, Any]:
     return manager.load()
 
 
-def create_dispatcher(cfg: Dict[str, Any]) -> Dispatcher:
+def create_dispatcher(cfg: Dict[str, Any], router: RouterController | None) -> Dispatcher:
     plugins_dir = cfg.get("plugins_dir", str(BASE_DIR / "plugins"))
-    allowed = cfg.get("allowed_user_ids", [])
-    admins = cfg.get("admin_user_ids", [])
     default_chat = cfg.get("chat_id_default")
     log_file = cfg.get("log_file")
 
@@ -45,10 +48,11 @@ def create_dispatcher(cfg: Dict[str, Any]) -> Dispatcher:
     dispatcher = Dispatcher(
         plugins_dir=plugins_dir,
         logger=_logger,
-        allowed_ids=allowed,
-        admin_ids=admins,
         default_chat=default_chat,
+        router=router,
     )
+    if default_chat:
+        log(f"Dispatcher restricted to chat {default_chat}", log_file)
     return dispatcher
 
 
@@ -61,7 +65,24 @@ def configure_environment(cfg: Dict[str, Any]) -> None:
         os.environ["TELEBOT_PLUGINS"] = str(plugins_dir)
 
 
-def poll_once(api: TelegramAPI, dispatcher: Dispatcher, poll_timeout: int, offset: int | None, log_file: str | None) -> int | None:
+def poll_once(
+    api: TelegramAPI,
+    dispatcher: Dispatcher,
+    poll_timeout: int,
+    offset: int | None,
+    log_file: str | None,
+    router: RouterController | None,
+    default_chat: int | None,
+) -> int | None:
+    log(f"Polling updates offset={offset} timeout={poll_timeout}", log_file)
+    if router:
+        try:
+            refresh = router.refresh_clients()
+        except Exception as exc:  # pragma: no cover - system specific
+            log_exception("Client refresh failed", exc, log_file)
+        else:
+            for client in refresh.get("new_pending", []):
+                notify_new_client(api, router, client, default_chat, log_file)
     try:
         updates = api.get_updates(offset=offset, timeout=poll_timeout)
     except Exception as exc:  # pragma: no cover - network/HTTP errors
@@ -69,12 +90,36 @@ def poll_once(api: TelegramAPI, dispatcher: Dispatcher, poll_timeout: int, offse
         time.sleep(5)
         return offset
 
-    if not isinstance(updates, dict) or not updates.get("ok"):
-        log("Telegram returned an unexpected response; retrying in 5s", log_file)
+    if not isinstance(updates, dict):
+        log("Telegram returned a non-dict response; retrying in 5s", log_file)
         time.sleep(5)
         return offset
 
-    for update in updates.get("result", []):
+    if not updates.get("ok"):
+        log(
+            "Telegram indicated failure: "
+            + json.dumps({k: updates.get(k) for k in ("error_code", "description") if updates.get(k) is not None}),
+            log_file,
+        )
+        if updates.get("error_code") == 401:
+            log(
+                "Telegram rejected the bot token (401). Verify the token in config.json and restart the service.",
+                log_file,
+                level="ERROR",
+            )
+            raise AuthenticationError("Telegram authentication failed (401)")
+        time.sleep(5)
+        return offset
+
+    results = updates.get("result", [])
+    log(f"Received {len(results)} updates from Telegram", log_file)
+
+    for update in results:
+        callback = update.get("callback_query")
+        if callback:
+            handle_callback_update(api, dispatcher, callback, log_file)
+            offset = max(offset or 0, update.get("update_id", 0) + 1)
+            continue
         offset = max(offset or 0, update.get("update_id", 0) + 1)
         message = update.get("message") or update.get("edited_message")
         if not message:
@@ -89,8 +134,12 @@ def poll_once(api: TelegramAPI, dispatcher: Dispatcher, poll_timeout: int, offse
         responses = dispatcher.handle(user_id, chat_id, message_id or 0, text)
         for response in responses:
             try:
+                log(
+                    f"-> sending to {chat_id} (reply={message_id}) {min(80, len(response))} chars",
+                    log_file,
+                )
                 api.send_message(chat_id, response, reply_to_message_id=message_id)
-                log(f"-> {chat_id}: {min(80, len(response))} chars", log_file)
+                log(f"-> sent to {chat_id}", log_file)
             except Exception as exc:  # pragma: no cover - network/HTTP errors
                 log(f"Failed to send message: {exc}", log_file)
                 time.sleep(1)
@@ -99,15 +148,53 @@ def poll_once(api: TelegramAPI, dispatcher: Dispatcher, poll_timeout: int, offse
 
 def run_bot(config_path: Path, once: bool = False) -> None:
     cfg = load_configuration(config_path)
+    cfg.setdefault("base_dir", str(BASE_DIR))
     log_file = cfg.get("log_file")
     poll_timeout = int(cfg.get("poll_timeout", 25))
     token = cfg.get("bot_token")
     if not token:
         raise RuntimeError("Telegram bot token missing from configuration")
 
+    log(f"Loaded configuration from {config_path}", log_file)
+    log(
+        "Bot starting with settings "
+        + json.dumps({
+            "poll_timeout": poll_timeout,
+            "chat_id_default": cfg.get("chat_id_default"),
+            "plugins_dir": cfg.get("plugins_dir"),
+        }),
+        log_file,
+    )
+
     configure_environment(cfg)
-    dispatcher = create_dispatcher(cfg)
+    router: RouterController | None = None
+    try:
+        router = RouterController(
+            cfg,
+            logger=lambda message, logfile=None, level="INFO": log(message, log_file, level=level),
+        )
+        router.ensure_nft()
+        log("Router controller initialised", log_file)
+    except Exception as exc:  # pragma: no cover - defensive
+        log_exception("Router controller unavailable", exc, log_file)
+        router = None
+
+    dispatcher = create_dispatcher(cfg, router)
     api = TelegramAPI(token)
+
+    try:
+        profile = api.get_me()
+    except Exception as exc:  # pragma: no cover - network
+        log_exception("Telegram handshake failed", exc, log_file)
+        raise
+    else:
+        if isinstance(profile, dict) and profile.get("ok") and profile.get("result"):
+            result = profile["result"]
+            username = result.get("username") or result.get("first_name") or "unknown"
+            identifier = result.get("id")
+            log(f"Authenticated to Telegram as {username} (id {identifier})", log_file)
+        else:
+            log("Unexpected response from getMe(); continuing but please verify token", log_file, level="WARNING")
 
     log("TeleBot starting…", log_file)
     offset: int | None = None
@@ -116,10 +203,87 @@ def run_bot(config_path: Path, once: bool = False) -> None:
     RUNNING = True
 
     while RUNNING:
-        offset = poll_once(api, dispatcher, poll_timeout, offset, log_file)
+        try:
+            offset = poll_once(
+                api,
+                dispatcher,
+                poll_timeout,
+                offset,
+                log_file,
+                router,
+                cfg.get("chat_id_default"),
+            )
+        except AuthenticationError:
+            RUNNING = False
+            raise
+        except Exception as exc:  # pragma: no cover - defensive
+            log_exception("Polling iteration failed", exc, log_file)
+            time.sleep(5)
         if once:
             break
     log("TeleBot stopped.", log_file)
+
+
+def notify_new_client(
+    api: TelegramAPI,
+    router: RouterController,
+    client: Any,
+    chat_id: int | None,
+    log_file: str | None,
+) -> None:
+    if not chat_id:
+        return
+    client_data = client if isinstance(client, dict) else client.to_dict()
+    details = router.describe_client(client_data)
+    keyboard = {
+        "inline_keyboard": [
+            [
+                {"text": "✅ Approve", "callback_data": f"client:approve:{client_data['mac']}",},
+                {"text": "🚫 Block", "callback_data": f"client:block:{client_data['mac']}"},
+            ],
+            [
+                {"text": "⭐ Whitelist", "callback_data": f"client:whitelist:{client_data['mac']}"},
+            ],
+        ]
+    }
+    text = (
+        "🆕 New device detected\n"
+        f"{details}\n\n"
+        "Approve, block, or whitelist the device using the buttons below or /approve command."
+    )
+    try:
+        api.send_message(chat_id, text, reply_markup=keyboard)
+    except Exception as exc:  # pragma: no cover
+        log(f"Failed to notify new client: {exc}", log_file, level="ERROR")
+
+
+def handle_callback_update(api: TelegramAPI, dispatcher: Dispatcher, callback: dict, log_file: str | None) -> None:
+    callback_id = callback.get("id")
+    data = callback.get("data") or ""
+    from_user = (callback.get("from") or {}).get("id") or 0
+    message = callback.get("message") or {}
+    chat_id = (message.get("chat") or {}).get("id")
+    message_id = message.get("message_id")
+    result = dispatcher.handle_callback(from_user, chat_id or 0, message_id or 0, data)
+    ack_text = result.get("ack")
+    try:
+        if callback_id:
+            api.answer_callback_query(callback_id, text=ack_text)
+    except Exception as exc:  # pragma: no cover
+        log(f"Failed answering callback: {exc}", log_file, level="ERROR")
+    message_text = result.get("message")
+    if message_text and chat_id:
+        try:
+            if message_id:
+                api.edit_message_text(chat_id, message_id, message_text)
+            else:
+                api.send_message(chat_id, message_text)
+        except Exception as exc:  # pragma: no cover
+            log(f"Failed updating message: {exc}", log_file, level="ERROR")
+            try:
+                api.send_message(chat_id, message_text)
+            except Exception:
+                pass
 
 
 

@@ -24,12 +24,25 @@
     pluginOutput: document.querySelector('#plugin-output'),
     logOutput: document.querySelector('#log-output'),
     refreshLogs: document.querySelector('#btn-refresh-logs'),
+    refreshClients: document.querySelector('#btn-refresh-clients'),
+    clientRows: document.querySelector('#client-rows'),
+    clientStats: document.querySelector('#client-stats'),
     toast: document.querySelector('#toast'),
+    appVersion: document.querySelector('#app-version'),
+    appBase: document.querySelector('#app-base'),
   };
 
   const state = {
     token: localStorage.getItem(STORAGE_KEY) || '',
     config: null,
+    clients: [],
+  };
+
+  const STATUS_META = {
+    pending: { label: 'Pending', icon: '🟡' },
+    approved: { label: 'Approved', icon: '🟢' },
+    blocked: { label: 'Blocked', icon: '🔴' },
+    whitelist: { label: 'Whitelisted', icon: '⭐' },
   };
 
   function showToast(message, kind = 'info') {
@@ -55,11 +68,19 @@
       headers['Content-Type'] = 'application/json';
       fetchOptions.body = JSON.stringify(options.body || {});
     }
-    const response = await fetch(url, fetchOptions);
+    let response;
+    try {
+      response = await fetch(url, fetchOptions);
+    } catch (error) {
+      console.error('Network error during API request', action, error);
+      throw error;
+    }
     const data = await response.json().catch(() => ({}));
     if (!response.ok || !data.ok) {
       const message = data.error || response.statusText || 'Request failed';
-      throw new Error(message);
+      const enhanced = new Error(message);
+      console.error('API error', action, { status: response.status, data });
+      throw enhanced;
     }
     return data;
   }
@@ -77,13 +98,17 @@
     if (!form) return;
     form.querySelector('#bot-token').value = config.bot_token_masked || '';
     form.querySelector('#chat-default').value = config.chat_id_default ?? '';
-    form.querySelector('#allowed-ids').value = (config.allowed_user_ids || []).join(', ');
-    form.querySelector('#admin-ids').value = (config.admin_user_ids || []).join(', ');
     form.querySelector('#poll-timeout').value = config.poll_timeout ?? 25;
     form.querySelector('#plugins-dir').value = config.plugins_dir || '';
     form.querySelector('#log-file').value = config.log_file || '';
     form.querySelector('#ui-token').value = config.ui_api_token || '';
     form.querySelector('#ui-base').value = config.ui_base_url || '';
+    form.querySelector('#client-state').value = config.client_state_file || '';
+    form.querySelector('#nft-table').value = config.nft_table || '';
+    form.querySelector('#nft-chain').value = config.nft_chain || '';
+    form.querySelector('#nft-block').value = config.nft_block_set || '';
+    form.querySelector('#nft-allow').value = config.nft_allow_set || '';
+    form.querySelector('#client-whitelist').value = (config.client_whitelist || []).join(', ');
   }
 
   function populatePlugins(plugins = []) {
@@ -119,8 +144,24 @@
     if (elements.logOutput && data.log_tail !== undefined) {
       elements.logOutput.textContent = data.log_tail || 'No log entries found.';
     }
+    if (data.version) {
+      if (elements.appVersion) {
+        const version = data.version.app || 'dev';
+        elements.appVersion.textContent = `Version ${version}`;
+      }
+      if (elements.appBase) {
+        const base = data.version.base_dir;
+        elements.appBase.textContent = base ? `Base ${base}` : '';
+      }
+    }
     populateConfig(data.config);
     populatePlugins(data.plugins);
+    if (data.clients) {
+      renderClients(data.clients.clients || []);
+      if (data.clients.counts) {
+        renderClientStatsFromCounts(data.clients.counts, data.clients.clients || []);
+      }
+    }
   }
 
   async function refreshAll(silent = false) {
@@ -131,6 +172,7 @@
         showToast('Status updated');
       }
     } catch (error) {
+      console.error('Status refresh failed', error);
       if (!silent) {
         showToast(error.message || String(error), 'error');
       }
@@ -142,13 +184,17 @@
     const payload = {
       bot_token: elements.configForm.querySelector('#bot-token').value,
       chat_id_default: elements.configForm.querySelector('#chat-default').value,
-      allowed_user_ids: elements.configForm.querySelector('#allowed-ids').value,
-      admin_user_ids: elements.configForm.querySelector('#admin-ids').value,
       poll_timeout: elements.configForm.querySelector('#poll-timeout').value,
       plugins_dir: elements.configForm.querySelector('#plugins-dir').value,
       log_file: elements.configForm.querySelector('#log-file').value,
       ui_api_token: elements.configForm.querySelector('#ui-token').value,
       ui_base_url: elements.configForm.querySelector('#ui-base').value,
+      client_state_file: elements.configForm.querySelector('#client-state').value,
+      nft_table: elements.configForm.querySelector('#nft-table').value,
+      nft_chain: elements.configForm.querySelector('#nft-chain').value,
+      nft_block_set: elements.configForm.querySelector('#nft-block').value,
+      nft_allow_set: elements.configForm.querySelector('#nft-allow').value,
+      client_whitelist: elements.configForm.querySelector('#client-whitelist').value,
     };
     try {
       await apiRequest('save_config', { method: 'POST', body: payload });
@@ -223,6 +269,167 @@
     }
   }
 
+  function renderClientStatsFromCounts(counts = {}, clients = []) {
+    if (!elements.clientStats) return;
+    const total = clients.length;
+    if (!total) {
+      elements.clientStats.textContent = 'No clients discovered yet.';
+      return;
+    }
+    const parts = [`${total} total`];
+    for (const key of Object.keys(STATUS_META)) {
+      const value = counts[key] || 0;
+      if (value) {
+        parts.push(`${STATUS_META[key].label}: ${value}`);
+      }
+    }
+    const unknown = counts.unknown || 0;
+    if (unknown) {
+      parts.push(`Unknown: ${unknown}`);
+    }
+    elements.clientStats.textContent = parts.join(' • ');
+  }
+
+  function renderClientStats(clients = []) {
+    const counts = {};
+    for (const client of clients) {
+      const status = client.status || 'unknown';
+      counts[status] = (counts[status] || 0) + 1;
+    }
+    renderClientStatsFromCounts(counts, clients);
+  }
+
+  function formatLastSeen(client) {
+    if (client.online) {
+      return 'Online now';
+    }
+    const ts = parseInt(client.last_seen, 10);
+    if (!ts) {
+      return 'Unknown';
+    }
+    const delta = Math.max(0, Math.floor(Date.now() / 1000) - ts);
+    if (delta < 60) return `${delta}s ago`;
+    if (delta < 3600) return `${Math.floor(delta / 60)}m ago`;
+    if (delta < 86400) return `${Math.floor(delta / 3600)}h ago`;
+    return `${Math.floor(delta / 86400)}d ago`;
+  }
+
+  function renderClients(clients = []) {
+    state.clients = clients;
+    if (!elements.clientRows) return;
+    const tbody = elements.clientRows;
+    tbody.innerHTML = '';
+    if (!clients.length) {
+      const row = document.createElement('tr');
+      const cell = document.createElement('td');
+      cell.colSpan = 6;
+      cell.className = 'empty';
+      cell.textContent = 'No clients discovered yet.';
+      row.appendChild(cell);
+      tbody.appendChild(row);
+      renderClientStats([]);
+      return;
+    }
+    for (const client of clients) {
+      const row = document.createElement('tr');
+      row.dataset.mac = client.mac;
+
+      const statusCell = document.createElement('td');
+      const statusInfo = STATUS_META[client.status] || { label: client.status || 'Unknown', icon: '•' };
+      const badge = document.createElement('span');
+      badge.className = `status-badge status-${client.status || 'unknown'}`;
+      badge.textContent = `${statusInfo.icon} ${statusInfo.label}`;
+      statusCell.appendChild(badge);
+
+      const hostCell = document.createElement('td');
+      hostCell.textContent = client.hostname || '—';
+
+      const macCell = document.createElement('td');
+      macCell.textContent = client.mac || '—';
+
+      const ipCell = document.createElement('td');
+      ipCell.textContent = client.ip || '—';
+
+      const seenCell = document.createElement('td');
+      seenCell.textContent = formatLastSeen(client);
+
+      const actionsCell = document.createElement('td');
+      actionsCell.className = 'actions';
+      const actions = determineClientActions(client.status);
+      for (const action of actions) {
+        const button = document.createElement('button');
+        button.className = 'btn btn-outline';
+        button.dataset.clientAction = action;
+        button.dataset.mac = client.mac;
+        button.textContent = actionLabel(action);
+        actionsCell.appendChild(button);
+      }
+
+      row.append(statusCell, hostCell, macCell, ipCell, seenCell, actionsCell);
+      tbody.appendChild(row);
+    }
+    renderClientStats(clients);
+  }
+
+  function determineClientActions(status) {
+    switch (status) {
+      case 'approved':
+        return ['block', 'forget'];
+      case 'blocked':
+        return ['approve', 'whitelist', 'forget'];
+      case 'whitelist':
+        return ['block', 'forget'];
+      default:
+        return ['approve', 'block', 'whitelist', 'forget'];
+    }
+  }
+
+  function actionLabel(action) {
+    switch (action) {
+      case 'approve':
+        return 'Approve';
+      case 'block':
+        return 'Block';
+      case 'whitelist':
+        return 'Whitelist';
+      case 'forget':
+        return 'Forget';
+      default:
+        return action;
+    }
+  }
+
+  async function refreshClients(silent = false) {
+    try {
+      const data = await apiRequest('clients');
+      renderClients(data.clients || []);
+      if (!silent) {
+        showToast('Client list updated');
+      }
+    } catch (error) {
+      if (!silent) {
+        showToast(error.message || String(error), 'error');
+      }
+    }
+  }
+
+  async function clientAction(action, mac) {
+    if (!mac) return;
+    try {
+      await apiRequest('client_action', { method: 'POST', body: { action, target: mac } });
+      const messages = {
+        approve: 'Client approved',
+        block: 'Client blocked',
+        whitelist: 'Client whitelisted',
+        forget: 'Client removed',
+      };
+      showToast(messages[action] || `Client ${action} request sent`);
+      await refreshClients(true);
+    } catch (error) {
+      showToast(error.message || String(error), 'error');
+    }
+  }
+
   async function controlBot(command) {
     try {
       await apiRequest('control', { method: 'POST', body: { command } });
@@ -271,6 +478,16 @@
       event.preventDefault();
       refreshLogs();
     });
+    elements.refreshClients?.addEventListener('click', (event) => {
+      event.preventDefault();
+      refreshClients();
+    });
+    elements.clientRows?.addEventListener('click', (event) => {
+      const target = event.target.closest('button[data-client-action]');
+      if (!target) return;
+      event.preventDefault();
+      clientAction(target.dataset.clientAction, target.dataset.mac);
+    });
   }
 
   updateTokenInput();
@@ -278,5 +495,6 @@
   if (state.token) {
     refreshAll(true);
     refreshLogs(true);
+    refreshClients(true);
   }
 })();
