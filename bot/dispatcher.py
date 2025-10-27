@@ -9,6 +9,8 @@ from typing import Callable, Iterable, List
 MAX_MSG_LEN = 3900
 ADMIN_PLUGIN_NAMES = {"reboot", "poweroff"}
 
+MAX_MSG_LEN = 3900
+ADMIN_PLUGIN_NAMES = {"reboot", "poweroff"}
 
 class Dispatcher:
     """Translate incoming Telegram messages into actions."""
