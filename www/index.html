@@ -13,7 +13,9 @@
         <h1>OpenWRT TeleBot</h1>
         <p>Manage your Telegram automation bot directly from your router.</p>
         <p class="hero__meta">
-          <span id="app-version" class="hero__badge">Version —</span>
+          <span id="app-version" class="hero__badge hero__badge--muted">Installed —</span>
+          <span id="app-remote" class="hero__badge hero__badge--muted">Online —</span>
+          <span id="app-delta" class="hero__badge hero__badge--status hero__badge--idle">Checking…</span>
           <span id="app-base" class="hero__path"></span>
         </p>
       </div>
@@ -52,6 +54,10 @@
             <strong>Last update</strong>
             <p id="status-updated">—</p>
           </div>
+          <div>
+            <strong>Version status</strong>
+            <p id="status-version">—</p>
+          </div>
         </div>
         <pre id="system-info" class="code-block">Waiting for data…</pre>
       </section>
@@ -86,6 +92,32 @@
           <label for="ui-base">UI base URL</label>
           <input id="ui-base" name="ui_base_url" type="text" placeholder="/telebot" />
 
+          <label for="version-endpoint">Remote version endpoint</label>
+          <input
+            id="version-endpoint"
+            name="version_endpoint"
+            type="url"
+            placeholder="https://api.github.com/repos/sfdcai/openwrt-telegram/releases/latest"
+          />
+
+          <div class="form-toggle">
+            <input id="enhanced-notifications" name="enhanced_notifications" type="checkbox" />
+            <label for="enhanced-notifications">Enhanced Telegram formatting</label>
+            <p class="form-hint">Adds emoji-rich HTML replies and inline summaries.</p>
+          </div>
+
+          <label for="notification-schedule">Scheduled digests (HH:MM, comma separated)</label>
+          <input
+            id="notification-schedule"
+            name="notification_schedule"
+            type="text"
+            placeholder="07:30, 19:00"
+          />
+          <p class="form-hint">Times use the router’s local timezone. Leave blank to disable.</p>
+
+          <label for="version-cache-ttl">Version cache TTL (seconds)</label>
+          <input id="version-cache-ttl" name="version_cache_ttl" type="number" min="60" step="60" />
+
           <label for="client-state">Client registry file</label>
           <input id="client-state" name="client_state_file" type="text" placeholder="/opt/openwrt-telebot/state/clients.json" />
 
@@ -101,8 +133,25 @@
           <label for="nft-allow">Approved set name</label>
           <input id="nft-allow" name="nft_allow_set" type="text" placeholder="approved_clients" />
 
+          <label for="nft-internet-block">WAN-only block set</label>
+          <input
+            id="nft-internet-block"
+            name="nft_internet_block_set"
+            type="text"
+            placeholder="internet_block_clients"
+          />
+
+          <label for="wan-interfaces">WAN interfaces (comma separated)</label>
+          <input id="wan-interfaces" name="wan_interfaces" type="text" placeholder="wan, wan6" />
+          <p class="form-hint">Used to drop traffic only when forwarding towards these interfaces.</p>
+
           <label for="client-whitelist">Whitelisted MACs (comma separated)</label>
-          <textarea id="client-whitelist" name="client_whitelist" rows="2" placeholder="aa:bb:cc:dd:ee:ff,11:22:33:44:55:66"></textarea>
+          <textarea
+            id="client-whitelist"
+            name="client_whitelist"
+            rows="2"
+            placeholder="aa:bb:cc:dd:ee:ff,11:22:33:44:55:66"
+          ></textarea>
         </form>
       </section>
 

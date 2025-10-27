@@ -29,7 +29,10 @@
     clientStats: document.querySelector('#client-stats'),
     toast: document.querySelector('#toast'),
     appVersion: document.querySelector('#app-version'),
+    appRemote: document.querySelector('#app-remote'),
+    appDelta: document.querySelector('#app-delta'),
     appBase: document.querySelector('#app-base'),
+    statusVersion: document.querySelector('#status-version'),
   };
 
   const storedToken = localStorage.getItem(STORAGE_KEY) || '';
@@ -52,6 +55,7 @@
   const STATUS_META = {
     pending: { label: 'Pending', icon: '🟡' },
     approved: { label: 'Approved', icon: '🟢' },
+    internet_blocked: { label: 'WAN blocked', icon: '🛑' },
     paused: { label: 'Paused', icon: '⏸' },
     blocked: { label: 'Blocked', icon: '🔴' },
     whitelist: { label: 'Whitelisted', icon: '⭐' },
@@ -194,12 +198,103 @@
     form.querySelector('#log-file').value = config.log_file || '';
     form.querySelector('#ui-token').value = config.ui_api_token || '';
     form.querySelector('#ui-base').value = config.ui_base_url || '';
+    form.querySelector('#version-endpoint').value = config.version_endpoint || '';
+    const ttlField = form.querySelector('#version-cache-ttl');
+    if (ttlField) {
+      ttlField.value = config.version_cache_ttl ?? '';
+    }
+    const enhancedToggle = form.querySelector('#enhanced-notifications');
+    if (enhancedToggle) {
+      enhancedToggle.checked = Boolean(config.enhanced_notifications);
+    }
+    const scheduleField = form.querySelector('#notification-schedule');
+    if (scheduleField) {
+      if (Array.isArray(config.notification_schedule)) {
+        scheduleField.value = config.notification_schedule.join(', ');
+      } else if (typeof config.notification_schedule === 'string') {
+        scheduleField.value = config.notification_schedule;
+      } else {
+        scheduleField.value = '';
+      }
+    }
     form.querySelector('#client-state').value = config.client_state_file || '';
     form.querySelector('#nft-table').value = config.nft_table || '';
     form.querySelector('#nft-chain').value = config.nft_chain || '';
     form.querySelector('#nft-block').value = config.nft_block_set || '';
     form.querySelector('#nft-allow').value = config.nft_allow_set || '';
+    const internetField = form.querySelector('#nft-internet-block');
+    if (internetField) {
+      internetField.value = config.nft_internet_block_set || '';
+    }
+    const wanField = form.querySelector('#wan-interfaces');
+    if (wanField) {
+      if (Array.isArray(config.wan_interfaces)) {
+        wanField.value = config.wan_interfaces.join(', ');
+      } else if (typeof config.wan_interfaces === 'string') {
+        wanField.value = config.wan_interfaces;
+      } else {
+        wanField.value = '';
+      }
+    }
     form.querySelector('#client-whitelist').value = (config.client_whitelist || []).join(', ');
+  }
+
+  function applyBadgeState(element, label, state, title) {
+    if (!element) return;
+    element.textContent = label;
+    element.title = title || '';
+    element.classList.remove('hero__badge--ok', 'hero__badge--warn', 'hero__badge--error', 'hero__badge--idle');
+    if (state) {
+      element.classList.add(`hero__badge--${state}`);
+    }
+  }
+
+  function updateVersionStatus(version = {}) {
+    if (elements.appVersion) {
+      const installed = version.app || 'dev';
+      elements.appVersion.textContent = `Installed ${installed}`;
+    }
+    if (elements.appBase) {
+      const base = version.base_dir;
+      elements.appBase.textContent = base ? `Base ${base}` : '';
+    }
+    const remote = version.remote || '';
+    if (elements.appRemote) {
+      elements.appRemote.textContent = remote ? `Online ${remote}` : 'Online —';
+      elements.appRemote.title = version.remote_source || '';
+    }
+    const statusInfo = (() => {
+      if (version.remote_error) {
+        return { label: '⚠️ Check failed', state: 'error', title: version.remote_error };
+      }
+      switch (version.status) {
+        case 'up_to_date':
+          return { label: '🟢 Up to date', state: 'ok' };
+        case 'update_available':
+          return { label: '🟡 Update available', state: 'warn' };
+        case 'ahead':
+          return { label: '🔵 Ahead of release', state: 'ok' };
+        case 'unknown':
+        default:
+          return { label: '… Checking', state: 'idle' };
+      }
+    })();
+    applyBadgeState(elements.appDelta, statusInfo.label, statusInfo.state, statusInfo.title);
+
+    if (elements.statusVersion) {
+      const installed = version.app || 'dev';
+      let summary = `Installed ${installed}`;
+      if (remote) {
+        summary += ` • Remote ${remote}`;
+      }
+      summary += ` • ${statusInfo.label}`;
+      const checked = version.remote_checked ? new Date(version.remote_checked) : null;
+      if (checked && !Number.isNaN(checked.getTime())) {
+        summary += `\nLast check ${checked.toLocaleString()}`;
+      }
+      elements.statusVersion.textContent = summary;
+      elements.statusVersion.title = version.remote_source || '';
+    }
   }
 
   function populatePlugins(plugins = []) {
@@ -243,14 +338,7 @@
       }
     }
     if (data.version) {
-      if (elements.appVersion) {
-        const version = data.version.app || 'dev';
-        elements.appVersion.textContent = `Version ${version}`;
-      }
-      if (elements.appBase) {
-        const base = data.version.base_dir;
-        elements.appBase.textContent = base ? `Base ${base}` : '';
-      }
+      updateVersionStatus(data.version);
     }
     populateConfig(data.config);
     populatePlugins(data.plugins);
@@ -292,11 +380,17 @@
       log_file: elements.configForm.querySelector('#log-file').value,
       ui_api_token: elements.configForm.querySelector('#ui-token').value,
       ui_base_url: elements.configForm.querySelector('#ui-base').value,
+      version_endpoint: elements.configForm.querySelector('#version-endpoint').value,
+      version_cache_ttl: elements.configForm.querySelector('#version-cache-ttl').value,
+      enhanced_notifications: elements.configForm.querySelector('#enhanced-notifications').checked,
+      notification_schedule: elements.configForm.querySelector('#notification-schedule').value,
       client_state_file: elements.configForm.querySelector('#client-state').value,
       nft_table: elements.configForm.querySelector('#nft-table').value,
       nft_chain: elements.configForm.querySelector('#nft-chain').value,
       nft_block_set: elements.configForm.querySelector('#nft-block').value,
       nft_allow_set: elements.configForm.querySelector('#nft-allow').value,
+      nft_internet_block_set: elements.configForm.querySelector('#nft-internet-block').value,
+      wan_interfaces: elements.configForm.querySelector('#wan-interfaces').value,
       client_whitelist: elements.configForm.querySelector('#client-whitelist').value,
     };
     try {
@@ -482,15 +576,17 @@
   function determineClientActions(status) {
     switch (status) {
       case 'approved':
-        return ['pause', 'block', 'whitelist', 'forget'];
+        return ['pause', 'block_internet', 'block_network', 'whitelist', 'forget'];
       case 'paused':
-        return ['resume', 'block', 'forget'];
+        return ['resume', 'block_internet', 'block_network', 'forget'];
       case 'blocked':
-        return ['approve', 'whitelist', 'forget'];
+        return ['approve', 'block_internet', 'whitelist', 'forget'];
+      case 'internet_blocked':
+        return ['approve', 'block_network', 'whitelist', 'forget'];
       case 'whitelist':
-        return ['block', 'forget'];
+        return ['block_internet', 'block_network', 'forget'];
       default:
-        return ['approve', 'block', 'whitelist', 'pause', 'forget'];
+        return ['approve', 'block_internet', 'block_network', 'whitelist', 'pause', 'forget'];
     }
   }
 
@@ -500,6 +596,10 @@
         return '✅ Approve';
       case 'block':
         return '🚫 Block';
+      case 'block_internet':
+        return '🌐🚫 Block internet';
+      case 'block_network':
+        return '⛔ Block network';
       case 'pause':
         return '⏸ Pause';
       case 'resume':
@@ -534,6 +634,8 @@
       const messages = {
         approve: 'Client approved',
         block: 'Client blocked',
+        block_internet: 'Client WAN access blocked',
+        block_network: 'Client fully blocked',
         whitelist: 'Client whitelisted',
         pause: 'Client paused',
         resume: 'Client resumed',
