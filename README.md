@@ -23,6 +23,8 @@ and helper scripts for integrating with router events and shell plugins.
 - **Optional rich Telegram formatting** with inline approval keyboards, sparkline
   graphs and emoji badges when you enable `enhanced_notifications` in the
   configuration.
+- **Interactive Telegram menus** that surface a tap-first control centre, client
+  pickers and quick actions so you rarely have to type identifiers by hand.
 
 ## Requirements
 
@@ -156,13 +158,14 @@ in `config.json`.
 
 The dispatcher responds to the following built-in commands:
 
+- `/menu` – open the interactive control centre with status tiles and quick actions.
 - `/ping` – heartbeat check.
 - `/status` – core system information.
 - `/plugins` – list executable shell plugins.
 - `/run <plugin> [args]` – run a plugin (admin-only for critical scripts).
 - `/log [lines]` – tail the bot log.
 - `/whoami` – echo your Telegram identifiers.
-- `/clients` – show all known clients and their status.
+- `/clients` – browse clients with inline navigation and one-tap action buttons.
 - `/router` – summarise approval counts and nftables health.
 - `/approve <id|mac|ip>` – approve a pending or blocked client.
 - `/block <id|mac|ip>` – block a client.
@@ -174,7 +177,9 @@ The dispatcher responds to the following built-in commands:
 
 Every approved device receives a stable identifier such as `C0007`. Use that ID
 in commands and the inline buttons to avoid typing MAC addresses from your
-phone.
+phone. Commands like `/approve`, `/block`, `/pause`, `/resume`, `/whitelist` and
+`/forget` now present an inline selector when you omit the identifier so you can
+confirm the target visually before actioning it.
 
 ## Web UI
 
@@ -198,6 +203,10 @@ you to:
   inline buttons so you can approve, block, pause or whitelist the device
   directly from chat. Enable `enhanced_notifications` to add HTML cards and a
   quick client status graph to that message.
+- Use `/clients` or `/menu → Clients` to browse pending devices with paginated
+  inline buttons. The same selector appears when you run `/approve`, `/block`,
+  `/pause`, `/resume`, `/whitelist` or `/forget` without arguments so you can
+  confirm the target before applying a change.
 - The web UI mirrors the same controls and shows live connection/"last seen"
   data pulled from DHCP leases and `ip neigh`.
 - Approving a client removes it from the block list, pausing moves it to a

@@ -231,16 +231,33 @@ def poll_once(
         log(f"<- {user_id}@{chat_id}: {text}", log_file)
         responses = dispatcher.handle(user_id, chat_id, message_id or 0, text)
         for response in responses:
+            if isinstance(response, dict):
+                payload = response
+                message_text = str(payload.get("text", ""))
+                reply_markup = payload.get("reply_markup")
+                parse_mode = payload.get("parse_mode")
+                disable_preview = payload.get("disable_web_page_preview")
+            else:
+                message_text = str(response)
+                reply_markup = None
+                parse_mode = None
+                disable_preview = None
+            if parse_mode is None:
+                parse_mode = "HTML" if dispatcher.uses_rich_text else None
+            if not message_text and not reply_markup:
+                continue
             try:
                 log(
-                    f"-> sending to {chat_id} (reply={message_id}) {min(80, len(response))} chars",
+                    f"-> sending to {chat_id} (reply={message_id}) {min(80, len(message_text))} chars",
                     log_file,
                 )
                 api.send_message(
                     chat_id,
-                    response,
+                    message_text,
                     reply_to_message_id=message_id,
-                    parse_mode="HTML" if dispatcher.uses_rich_text else None,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode,
+                    disable_web_page_preview=disable_preview,
                 )
                 log(f"-> sent to {chat_id}", log_file)
             except Exception as exc:  # pragma: no cover - network/HTTP errors
@@ -428,7 +445,7 @@ def notify_new_client(
             details_lines.append("<b>Current client mix:</b>")
             details_lines.append(f"<pre>{html.escape(graph)}</pre>")
         details_lines.append(
-            "Use the buttons below or /approve, /block, /whitelist commands to manage this device."
+            "Use the buttons below or /menu, /approve, /block, /whitelist commands to manage this device."
         )
         text = "\n".join(details_lines)
         parse_mode = "HTML"
@@ -436,7 +453,7 @@ def notify_new_client(
         text = (
             "🆕 New device detected\n"
             f"{details}\n\n"
-            "Approve, block, or whitelist the device using the buttons below or /approve command."
+            "Approve, block, or whitelist the device using the buttons below or the /menu command."
         )
     try:
         api.send_message(chat_id, text, reply_markup=keyboard, parse_mode=parse_mode)
@@ -487,6 +504,11 @@ def handle_callback_update(api: TelegramAPI, dispatcher: Dispatcher, callback: d
     except Exception as exc:  # pragma: no cover
         log(f"Failed answering callback: {exc}", log_file, level="ERROR")
     message_text = result.get("message")
+    reply_markup = result.get("reply_markup")
+    parse_mode = result.get("parse_mode")
+    if parse_mode is None and dispatcher.uses_rich_text:
+        parse_mode = "HTML"
+    disable_preview = result.get("disable_web_page_preview")
     if message_text and chat_id:
         try:
             if message_id:
@@ -494,18 +516,27 @@ def handle_callback_update(api: TelegramAPI, dispatcher: Dispatcher, callback: d
                     chat_id,
                     message_id,
                     message_text,
-                    parse_mode="HTML" if dispatcher.uses_rich_text else None,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode,
                 )
             else:
                 api.send_message(
                     chat_id,
                     message_text,
-                    parse_mode="HTML" if dispatcher.uses_rich_text else None,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode,
+                    disable_web_page_preview=disable_preview,
                 )
         except Exception as exc:  # pragma: no cover
             log(f"Failed updating message: {exc}", log_file, level="ERROR")
             try:
-                api.send_message(chat_id, message_text)
+                api.send_message(
+                    chat_id,
+                    message_text,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode,
+                    disable_web_page_preview=disable_preview,
+                )
             except Exception:
                 pass
 
