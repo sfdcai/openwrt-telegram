@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
 from urllib.parse import parse_qs
@@ -15,6 +20,18 @@ if not BASE_DIR.exists():
     BASE_DIR = Path(__file__).resolve().parents[2]
 CONFIG_PATH = Path(os.environ.get("TELEBOT_CONFIG", BASE_DIR / "config" / "config.json"))
 VERSION_PATH = BASE_DIR / "VERSION"
+
+DEFAULT_VERSION_ENDPOINT = "https://api.github.com/repos/sfdcai/openwrt-telegram/releases/latest"
+MIN_VERSION_CACHE_TTL = 60
+_VERSION_RE = re.compile(r"(\d+)")
+SCHEDULE_ENTRY_RE = re.compile(r"^(?P<hour>\d{1,2}):(?P<minute>\d{2})$")
+_REMOTE_VERSION_CACHE: Dict[str, Any] = {
+    "endpoint": None,
+    "timestamp": 0.0,
+    "version": None,
+    "error": None,
+    "source": None,
+}
 
 sys.path.insert(0, str(BASE_DIR / "bot"))
 
@@ -43,6 +60,144 @@ def read_version() -> str:
         log_exception("Failed to read VERSION file", exc, None)
         return "dev"
 
+
+def _isoformat(timestamp: float | int | None) -> str | None:
+    if not timestamp:
+        return None
+    try:
+        dt = datetime.fromtimestamp(float(timestamp), tz=timezone.utc)
+    except (ValueError, OSError, TypeError):
+        return None
+    return dt.isoformat().replace("+00:00", "Z")
+
+
+def _int_or_default(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(MIN_VERSION_CACHE_TTL, parsed)
+
+
+def _parse_remote_payload(payload: str) -> str | None:
+    text = (payload or "").strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return text.splitlines()[0].strip() if text else None
+    if isinstance(data, dict):
+        for key in ("version", "tag_name", "name", "latest", "value"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                for key in ("version", "tag_name", "name"):
+                    value = item.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+            elif isinstance(item, str) and item.strip():
+                return item.strip()
+    if isinstance(data, str) and data.strip():
+        return data.strip()
+    return text.splitlines()[0].strip() if text else None
+
+
+def _version_tuple(value: str | None) -> tuple[int, int, int] | tuple[()]:
+    if not value:
+        return tuple()
+    matches = _VERSION_RE.findall(value)
+    digits: list[int] = []
+    for match in matches:
+        try:
+            digits.append(int(match))
+        except ValueError:
+            continue
+        if len(digits) >= 3:
+            break
+    if not digits:
+        return tuple()
+    while len(digits) < 3:
+        digits.append(0)
+    return tuple(digits[:3])
+
+
+def compare_versions(local: str | None, remote: str | None) -> str:
+    if not remote:
+        return "unknown"
+    local_clean = (local or "").strip()
+    remote_clean = remote.strip()
+    if not remote_clean:
+        return "unknown"
+    if local_clean.lower() == remote_clean.lower():
+        return "up_to_date"
+    local_tuple = _version_tuple(local_clean)
+    remote_tuple = _version_tuple(remote_clean)
+    if not local_tuple or not remote_tuple:
+        return "unknown"
+    if local_tuple < remote_tuple:
+        return "update_available"
+    if local_tuple > remote_tuple:
+        return "ahead"
+    return "up_to_date"
+
+
+def invalidate_remote_cache() -> None:
+    _REMOTE_VERSION_CACHE["timestamp"] = 0.0
+
+
+def fetch_remote_version(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    endpoint = (
+        cfg.get("version_endpoint")
+        or os.environ.get("TELEBOT_VERSION_ENDPOINT")
+        or DEFAULT_VERSION_ENDPOINT
+    )
+    ttl = _int_or_default(cfg.get("version_cache_ttl"), 3600)
+    now = time.time()
+    if (
+        _REMOTE_VERSION_CACHE.get("endpoint") == endpoint
+        and now - float(_REMOTE_VERSION_CACHE.get("timestamp") or 0) < ttl
+    ):
+        return dict(_REMOTE_VERSION_CACHE)
+
+    cache = {
+        "endpoint": endpoint,
+        "timestamp": now,
+        "version": None,
+        "error": None,
+        "source": endpoint,
+    }
+
+    if not endpoint:
+        cache["error"] = "Remote version endpoint not configured"
+    else:
+        try:
+            with urllib.request.urlopen(endpoint, timeout=10) as response:
+                payload = response.read().decode("utf-8", errors="ignore")
+            version = _parse_remote_payload(payload)
+            if version:
+                cache["version"] = version
+            else:
+                cache["error"] = "Remote feed returned no version"
+        except urllib.error.HTTPError as exc:  # pragma: no cover - network specific
+            try:
+                details = exc.read().decode("utf-8", errors="ignore").strip()
+            except Exception:  # pragma: no cover - defensive
+                details = ""
+            message = f"HTTP {exc.code}"
+            if details:
+                message += f" — {details[:120]}"
+            cache["error"] = message
+        except urllib.error.URLError as exc:  # pragma: no cover - network specific
+            cache["error"] = f"Network error: {exc.reason}"
+        except Exception as exc:  # pragma: no cover - defensive
+            cache["error"] = str(exc)
+
+    _REMOTE_VERSION_CACHE.update(cache)
+    return dict(_REMOTE_VERSION_CACHE)
 
 def read_body() -> Dict[str, Any]:
     length = int(os.environ.get("CONTENT_LENGTH", "0") or "0")
@@ -157,6 +312,7 @@ def mask_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
 def save_config(manager: ConfigManager, payload: Dict[str, Any]) -> Dict[str, Any]:
     current = manager.load()
     updated = dict(current)
+    invalidate_cache = False
 
     token_value = str(payload.get("bot_token", "")).strip()
     current_mask = ConfigManager.mask_token(current.get("bot_token"))
@@ -168,6 +324,7 @@ def save_config(manager: ConfigManager, payload: Dict[str, Any]) -> Dict[str, An
         "log_file",
         "ui_api_token",
         "ui_base_url",
+        "version_endpoint",
         "client_state_file",
         "nft_table",
         "nft_chain",
@@ -175,7 +332,10 @@ def save_config(manager: ConfigManager, payload: Dict[str, Any]) -> Dict[str, An
         "nft_allow_set",
     ):
         if key in payload and payload[key] is not None:
-            updated[key] = str(payload[key]).strip()
+            value = str(payload[key]).strip()
+            if key == "version_endpoint" and value != updated.get(key, ""):
+                invalidate_cache = True
+            updated[key] = value
 
     if payload.get("chat_id_default"):
         try:
@@ -200,6 +360,46 @@ def save_config(manager: ConfigManager, payload: Dict[str, Any]) -> Dict[str, An
         updated["poll_timeout"] = max(5, int(payload.get("poll_timeout", current.get("poll_timeout", 25))))
     except (TypeError, ValueError):
         updated["poll_timeout"] = current.get("poll_timeout", 25)
+
+    existing_ttl = _int_or_default(updated.get("version_cache_ttl"), 3600)
+    if "version_cache_ttl" in payload:
+        new_ttl = _int_or_default(payload.get("version_cache_ttl"), existing_ttl)
+        if new_ttl != existing_ttl:
+            updated["version_cache_ttl"] = new_ttl
+            invalidate_cache = True
+    else:
+        updated["version_cache_ttl"] = existing_ttl
+
+    if "enhanced_notifications" in payload:
+        updated["enhanced_notifications"] = bool(payload.get("enhanced_notifications"))
+
+    if "notification_schedule" in payload:
+        schedule_raw = payload.get("notification_schedule")
+        if isinstance(schedule_raw, list):
+            candidates = [str(item).strip() for item in schedule_raw if str(item).strip()]
+        else:
+            candidates = [
+                part.strip()
+                for part in str(schedule_raw or "").replace(";", ",").split(",")
+                if part.strip()
+            ]
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            match = SCHEDULE_ENTRY_RE.match(candidate)
+            if not match:
+                continue
+            hour = min(23, max(0, int(match.group("hour"))))
+            minute = min(59, max(0, int(match.group("minute"))))
+            entry = f"{hour:02d}:{minute:02d}"
+            if entry not in seen:
+                normalized.append(entry)
+                seen.add(entry)
+        normalized.sort()
+        updated["notification_schedule"] = normalized
+
+    if invalidate_cache:
+        invalidate_remote_cache()
 
     manager.save(updated)
     return updated
@@ -285,6 +485,9 @@ def main() -> None:
                     status = item.get("status", "unknown")
                     counts[status] = counts.get(status, 0) + 1
                 client_info["counts"] = counts
+            local_version = read_version()
+            remote_info = fetch_remote_version(cfg)
+            status_label = compare_versions(local_version, remote_info.get("version"))
             response = {
                 "ok": True,
                 "bot": bot_status(),
@@ -294,8 +497,13 @@ def main() -> None:
                 "log_tail": read_logs(cfg.get("log_file")),
                 "clients": client_info,
                 "version": {
-                    "app": read_version(),
+                    "app": local_version,
                     "base_dir": str(BASE_DIR),
+                    "remote": remote_info.get("version"),
+                    "remote_checked": _isoformat(remote_info.get("timestamp")),
+                    "remote_error": remote_info.get("error"),
+                    "remote_source": remote_info.get("source") or remote_info.get("endpoint"),
+                    "status": status_label,
                 },
                 "auth": {
                     "token_required": bool(cfg.get("ui_api_token")),

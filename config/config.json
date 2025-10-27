@@ -13,6 +13,9 @@
   "nft_allow_set": "approved_clients",
   "firewall_include_path": "/etc/nftables.d/telebot.nft",
   "firewall_include_section": "telebot_include",
-  "enhanced_notifications": false,
+  "enhanced_notifications": true,
+  "notification_schedule": [],
+  "version_endpoint": "https://api.github.com/repos/sfdcai/openwrt-telegram/releases/latest",
+  "version_cache_ttl": 3600,
   "client_whitelist": []
 }
