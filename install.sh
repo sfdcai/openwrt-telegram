@@ -3,29 +3,22 @@
 
 set -e
 
-TARGET_BASE="${1:-/opt/openwrt-telebot}"
-CUSTOM_ZIP="${2:-}"
-REPO="sfdcai/openwrt-telegram"
-LATEST_API="https://api.github.com/repos/$REPO/releases/latest"
-DEFAULT_ASSET="https://github.com/$REPO/releases/latest/download/openwrt-telegram.zip"
+ZIP_URL="$1"
+TARGET_BASE="${2:-/opt/openwrt-telebot}"
+
+if [ -z "$ZIP_URL" ]; then
+  cat <<USAGE
+Usage: $0 <zip-url> [target-directory]
+
+Example:
+  $0 https://github.com/your-user/openwrt-telegram/archive/refs/heads/main.zip
+USAGE
+  exit 1
+fi
 
 command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
-
-if ! command_exists curl && ! command_exists wget; then
-  echo "Error: curl or wget is required." >&2
-  exit 1
-fi
-
-if ! command_exists unzip; then
-  echo "Error: unzip is required." >&2
-  exit 1
-fi
-
-if ! command_exists nft; then
-  echo "Warning: nft command not found – install 'nftables' for client approvals." >&2
-fi
 
 TMP_DIR="$(mktemp -d)"
 cleanup() {
@@ -34,62 +27,26 @@ cleanup() {
 trap cleanup EXIT
 
 ARCHIVE="$TMP_DIR/source.zip"
-ZIP_URL="${CUSTOM_ZIP:-${ZIP_URL:-}}"
 
-fetch_json() {
-  if command_exists curl; then
-    curl -fsSL "$1"
-  else
-    wget -qO- "$1"
-  fi
-}
-
-probe_url() {
-  if command_exists curl; then
-    curl -sfIL "$1" >/dev/null 2>&1
-  else
-    wget --spider "$1" >/dev/null 2>&1
-  fi
-}
-
-resolve_zip_url() {
-  if [ -n "$ZIP_URL" ]; then
-    return 0
-  fi
-
-  if probe_url "$DEFAULT_ASSET"; then
-    ZIP_URL="$DEFAULT_ASSET"
-    return 0
-  fi
-
-  RELEASE_JSON="$(fetch_json "$LATEST_API" 2>/dev/null || true)"
-  if [ -n "$RELEASE_JSON" ]; then
-    ZIP_URL="$(printf '%s' "$RELEASE_JSON" | grep -o 'https://[^"[:space:]]*\.zip' | head -n1)"
-    if [ -z "$ZIP_URL" ]; then
-      TAG="$(printf '%s' "$RELEASE_JSON" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"[:space:]]*\)".*/\1/p' | head -n1)"
-      if [ -n "$TAG" ]; then
-        ZIP_URL="https://github.com/$REPO/archive/refs/tags/$TAG.zip"
-      fi
-    fi
-  fi
-
-  if [ -z "$ZIP_URL" ]; then
-    ZIP_URL="https://github.com/$REPO/archive/refs/heads/main.zip"
-  fi
-}
-
-resolve_zip_url
-
-download_zip() {
-  echo "Downloading release archive…"
+if echo "$ZIP_URL" | grep -qE '^https?://'; then
+  echo "Downloading repository archive…"
   if command_exists curl; then
     curl -L "$ZIP_URL" -o "$ARCHIVE"
-  else
+  elif command_exists wget; then
     wget -O "$ARCHIVE" "$ZIP_URL"
+  else
+    echo "Error: curl or wget required to download archive." >&2
+    exit 1
   fi
-}
+else
+  echo "Using local archive $ZIP_URL"
+  cp "$ZIP_URL" "$ARCHIVE"
+fi
 
-download_zip
+if ! command_exists unzip; then
+  echo "Error: unzip is required." >&2
+  exit 1
+fi
 
 unzip -q "$ARCHIVE" -d "$TMP_DIR"
 SRC_DIR="$(find "$TMP_DIR" -maxdepth 1 -type d -name 'openwrt-telebot*' -o -name 'openwrt-telegram*' | head -n1)"
@@ -106,19 +63,6 @@ mkdir -p "$TARGET_BASE/config"
 if [ ! -f "$TARGET_BASE/config/config.json" ] && [ -f "$SRC_DIR/config/config.json" ]; then
   cp "$SRC_DIR/config/config.json" "$TARGET_BASE/config/config.json"
 fi
-
-# Prepare state directory
-mkdir -p "$TARGET_BASE/state"
-STATE_FILE="$(sed -n 's/.*"client_state_file"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$TARGET_BASE/config/config.json" | head -n1)"
-if [ -z "$STATE_FILE" ]; then
-  STATE_FILE="$TARGET_BASE/state/clients.json"
-fi
-STATE_DIR="$(dirname "$STATE_FILE")"
-mkdir -p "$STATE_DIR"
-if [ ! -f "$STATE_FILE" ]; then
-  printf '{"clients": {}}\n' >"$STATE_FILE"
-fi
-chmod 600 "$STATE_FILE"
 
 # Permissions
 chmod +x "$TARGET_BASE/bot/main.py"
@@ -150,8 +94,7 @@ if [ -d "$TARGET_BASE/www" ]; then
 fi
 
 echo "Installation complete!"
-echo "Downloaded from: $ZIP_URL"
 echo "Next steps:"
 echo "  1. Edit $TARGET_BASE/config/config.json with your bot token and chat id."
-echo "  2. Reload uhttpd so it serves the latest UI and CGI endpoint."
+echo "  2. Ensure uhttpd serves /www/telebot and /www/cgi-bin/telebot.py (reload uhttpd if necessary)."
 echo "  3. Enable and start the service: /etc/init.d/openwrt-telebot enable && /etc/init.d/openwrt-telebot start"

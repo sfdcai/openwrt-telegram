@@ -12,12 +12,10 @@ and helper scripts for integrating with router events and shell plugins.
   directory to expose router functionality as Telegram commands.
 - **Beautiful web UI** hosted from uhttpd for real-time status, configuration
   editing, log inspection, plugin execution and manual chat messaging.
-- **Installer** script that downloads the latest release ZIP, deploys it to
-  `/opt/openwrt-telebot`, sets permissions and copies the web assets to `/www`.
+- **Installer** script that downloads a ZIP archive of this repository, deploys
+  it to `/opt/openwrt-telebot`, sets permissions and copies the web assets to
+  `/www`.
 - **Event helpers** for DHCP and WAN notifications via Telegram.
-- **Router-aware access control** that watches LAN clients, blocks newcomers in
-  nftables until you approve them, and lets you manage the allow/block lists
-  from Telegram or the web dashboard.
 
 ## Requirements
 
@@ -25,23 +23,18 @@ and helper scripts for integrating with router events and shell plugins.
 - Python 3 (`opkg update && opkg install python3`)
 - `curl` or `wget` plus `unzip` (for the installer)
 - uhttpd web server (stock on OpenWRT)
-- `nftables` (`opkg install nftables`) for client isolation and approval
-
 
 ## Quick install
 
 ```sh
-sh install.sh
+sh install.sh https://github.com/sfdcai/openwrt-telegram/archive/refs/tags/0.01b.zip
 ```
 
-Optionally pass a custom installation directory as the first argument
-(defaults to `/opt/openwrt-telebot`). The installer performs the following
-actions:
+The installer accepts an optional second argument for the destination directory
+(default `/opt/openwrt-telebot`). It performs the following actions:
 
-1. Resolves the most recent release from
-   <https://github.com/sfdcai/openwrt-telegram/releases> and downloads the ZIP
-   bundle.
-2. Extracts the archive and copies the project into the target directory.
+1. Downloads and extracts the repository ZIP archive.
+2. Copies files into `/opt/openwrt-telebot`.
 3. Installs the init script to `/etc/init.d/openwrt-telebot` and sets execute
    permissions on Python and shell helpers.
 4. Creates the log file directory and deploys the web UI to `/www/telebot` with
@@ -76,6 +69,8 @@ Serve the UI by copying `www/index.html`, `www/assets`, and
 Edit `/opt/openwrt-telebot/config/config.json`:
 
 - `bot_token` – Telegram bot token from BotFather.
+- `allowed_user_ids` – Telegram IDs allowed to interact with the bot.
+- `admin_user_ids` – IDs with elevated permissions (e.g. plugin execution).
 - `chat_id_default` – Default chat ID for outbound notifications.
 - `poll_timeout` – Long polling timeout in seconds.
 - `plugins_dir` – Directory containing executable shell plugins.
@@ -83,18 +78,9 @@ Edit `/opt/openwrt-telebot/config/config.json`:
 - `ui_api_token` – Token required by the web UI API (store it locally in the
   browser via the UI access panel).
 - `ui_base_url` – Preferred base URL for the UI (informational).
-- `client_state_file` – JSON file that stores discovered clients and their
-  approval status (defaults to `state/clients.json`).
-- `nft_table` / `nft_chain` – nftables objects that TeleBot manages to block
-  unapproved MAC addresses on the forward hook.
-- `nft_block_set` / `nft_allow_set` – nftables sets holding blocked and
-  approved MAC addresses.
-- `client_whitelist` – List of MAC addresses that bypass approval entirely.
 
 Use the built-in web UI to manage these fields securely – token values are
-masked when displayed and only updated when explicitly changed. The bot accepts
-messages only from the configured default chat ID, so make sure it matches your
-personal conversation with the bot.
+masked when displayed and only updated when explicitly changed.
 
 ## Running the bot
 
@@ -116,23 +102,6 @@ panel allows you to:
 - Send test messages or arbitrary messages to specific chats.
 - Run shell plugins and view their output instantly.
 - Tail recent log entries.
-- Review LAN devices, approve or reject new clients, and maintain a whitelist
-  that is never blocked.
-
-### Client approval workflow
-
-- When a new MAC address appears on the LAN it is added to the `blocked`
-  nftables set and shown as **Pending** in the dashboard.
-- TeleBot sends a Telegram notification with inline buttons so you can approve,
-  block, or whitelist the device directly from chat.
-- The web UI mirrors the same controls and shows live connection/"last seen"
-  data pulled from DHCP leases and `ip neigh`.
-- Approving a client removes it from the block list, whitelisting marks it as
-  always allowed, and forgetting a device clears it from the registry.
-
-All operations are logged to the configured log file, and the CGI/UI layer will
-report errors back to the browser while appending stack traces to the log for
-easy troubleshooting.
 
 ## Helpers and events
 

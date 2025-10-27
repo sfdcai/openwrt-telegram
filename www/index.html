@@ -67,6 +67,12 @@
           <label for="chat-default">Default chat ID</label>
           <input id="chat-default" name="chat_id_default" type="number" />
 
+          <label for="allowed-ids">Allowed user IDs</label>
+          <input id="allowed-ids" name="allowed_user_ids" type="text" placeholder="111111,222222" />
+
+          <label for="admin-ids">Admin user IDs</label>
+          <input id="admin-ids" name="admin_user_ids" type="text" placeholder="111111" />
+
           <label for="poll-timeout">Poll timeout (seconds)</label>
           <input id="poll-timeout" name="poll_timeout" type="number" min="5" max="100" />
 
@@ -81,52 +87,7 @@
 
           <label for="ui-base">UI base URL</label>
           <input id="ui-base" name="ui_base_url" type="text" placeholder="/telebot" />
-
-          <label for="client-state">Client registry file</label>
-          <input id="client-state" name="client_state_file" type="text" placeholder="/opt/openwrt-telebot/state/clients.json" />
-
-          <label for="nft-table">nftables table</label>
-          <input id="nft-table" name="nft_table" type="text" placeholder="telebot" />
-
-          <label for="nft-chain">nftables chain</label>
-          <input id="nft-chain" name="nft_chain" type="text" placeholder="client_guard" />
-
-          <label for="nft-block">Blocked set name</label>
-          <input id="nft-block" name="nft_block_set" type="text" placeholder="blocked_clients" />
-
-          <label for="nft-allow">Approved set name</label>
-          <input id="nft-allow" name="nft_allow_set" type="text" placeholder="approved_clients" />
-
-          <label for="client-whitelist">Whitelisted MACs (comma separated)</label>
-          <textarea id="client-whitelist" name="client_whitelist" rows="2" placeholder="aa:bb:cc:dd:ee:ff,11:22:33:44:55:66"></textarea>
         </form>
-      </section>
-
-      <section class="card" id="clients-card">
-        <div class="card__header">
-          <h2>Network clients</h2>
-          <div class="card__actions">
-            <button id="btn-refresh-clients" class="btn btn-outline">Refresh</button>
-          </div>
-        </div>
-        <div id="client-stats" class="client-stats">No clients discovered yet.</div>
-        <div class="table-scroll">
-          <table class="client-table">
-            <thead>
-              <tr>
-                <th>Status</th>
-                <th>Hostname</th>
-                <th>MAC</th>
-                <th>IP</th>
-                <th>Last seen</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody id="client-rows">
-              <tr><td colspan="6" class="empty">Waiting for data…</td></tr>
-            </tbody>
-          </table>
-        </div>
       </section>
 
       <section class="card" id="message-card">
