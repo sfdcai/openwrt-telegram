@@ -77,6 +77,8 @@
     if (!form) return;
     form.querySelector('#bot-token').value = config.bot_token_masked || '';
     form.querySelector('#chat-default').value = config.chat_id_default ?? '';
+    form.querySelector('#allowed-ids').value = (config.allowed_user_ids || []).join(', ');
+    form.querySelector('#admin-ids').value = (config.admin_user_ids || []).join(', ');
     form.querySelector('#poll-timeout').value = config.poll_timeout ?? 25;
     form.querySelector('#plugins-dir').value = config.plugins_dir || '';
     form.querySelector('#log-file').value = config.log_file || '';
@@ -140,6 +142,8 @@
     const payload = {
       bot_token: elements.configForm.querySelector('#bot-token').value,
       chat_id_default: elements.configForm.querySelector('#chat-default').value,
+      allowed_user_ids: elements.configForm.querySelector('#allowed-ids').value,
+      admin_user_ids: elements.configForm.querySelector('#admin-ids').value,
       poll_timeout: elements.configForm.querySelector('#poll-timeout').value,
       plugins_dir: elements.configForm.querySelector('#plugins-dir').value,
       log_file: elements.configForm.querySelector('#log-file').value,

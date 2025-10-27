@@ -34,6 +34,8 @@ def load_configuration(path: Path) -> Dict[str, Any]:
 
 def create_dispatcher(cfg: Dict[str, Any]) -> Dispatcher:
     plugins_dir = cfg.get("plugins_dir", str(BASE_DIR / "plugins"))
+    allowed = cfg.get("allowed_user_ids", [])
+    admins = cfg.get("admin_user_ids", [])
     default_chat = cfg.get("chat_id_default")
     log_file = cfg.get("log_file")
 
@@ -43,10 +45,10 @@ def create_dispatcher(cfg: Dict[str, Any]) -> Dispatcher:
     dispatcher = Dispatcher(
         plugins_dir=plugins_dir,
         logger=_logger,
+        allowed_ids=allowed,
+        admin_ids=admins,
         default_chat=default_chat,
     )
-    if default_chat:
-        log(f"Dispatcher restricted to chat {default_chat}", log_file)
     return dispatcher
 
 
@@ -59,14 +61,7 @@ def configure_environment(cfg: Dict[str, Any]) -> None:
         os.environ["TELEBOT_PLUGINS"] = str(plugins_dir)
 
 
-def poll_once(
-    api: TelegramAPI,
-    dispatcher: Dispatcher,
-    poll_timeout: int,
-    offset: int | None,
-    log_file: str | None,
-) -> int | None:
-    log(f"Polling updates offset={offset} timeout={poll_timeout}", log_file)
+def poll_once(api: TelegramAPI, dispatcher: Dispatcher, poll_timeout: int, offset: int | None, log_file: str | None) -> int | None:
     try:
         updates = api.get_updates(offset=offset, timeout=poll_timeout)
     except Exception as exc:  # pragma: no cover - network/HTTP errors
@@ -74,24 +69,12 @@ def poll_once(
         time.sleep(5)
         return offset
 
-    if not isinstance(updates, dict):
-        log("Telegram returned a non-dict response; retrying in 5s", log_file)
+    if not isinstance(updates, dict) or not updates.get("ok"):
+        log("Telegram returned an unexpected response; retrying in 5s", log_file)
         time.sleep(5)
         return offset
 
-    if not updates.get("ok"):
-        log(
-            "Telegram indicated failure: "
-            + json.dumps({k: updates.get(k) for k in ("error_code", "description") if updates.get(k) is not None}),
-            log_file,
-        )
-        time.sleep(5)
-        return offset
-
-    results = updates.get("result", [])
-    log(f"Received {len(results)} updates from Telegram", log_file)
-
-    for update in results:
+    for update in updates.get("result", []):
         offset = max(offset or 0, update.get("update_id", 0) + 1)
         message = update.get("message") or update.get("edited_message")
         if not message:
@@ -106,12 +89,8 @@ def poll_once(
         responses = dispatcher.handle(user_id, chat_id, message_id or 0, text)
         for response in responses:
             try:
-                log(
-                    f"-> sending to {chat_id} (reply={message_id}) {min(80, len(response))} chars",
-                    log_file,
-                )
                 api.send_message(chat_id, response, reply_to_message_id=message_id)
-                log(f"-> sent to {chat_id}", log_file)
+                log(f"-> {chat_id}: {min(80, len(response))} chars", log_file)
             except Exception as exc:  # pragma: no cover - network/HTTP errors
                 log(f"Failed to send message: {exc}", log_file)
                 time.sleep(1)
@@ -125,17 +104,6 @@ def run_bot(config_path: Path, once: bool = False) -> None:
     token = cfg.get("bot_token")
     if not token:
         raise RuntimeError("Telegram bot token missing from configuration")
-
-    log(f"Loaded configuration from {config_path}", log_file)
-    log(
-        "Bot starting with settings "
-        + json.dumps({
-            "poll_timeout": poll_timeout,
-            "chat_id_default": cfg.get("chat_id_default"),
-            "plugins_dir": cfg.get("plugins_dir"),
-        }),
-        log_file,
-    )
 
     configure_environment(cfg)
     dispatcher = create_dispatcher(cfg)

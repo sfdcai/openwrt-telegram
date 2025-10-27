@@ -22,14 +22,7 @@ class TelegramAPI:
             with urllib.request.urlopen(request, timeout=60) as response:
                 payload = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:  # pragma: no cover - network specific
-            try:
-                details = exc.read().decode("utf-8", errors="ignore")
-            except Exception:  # pragma: no cover - defensive
-                details = ""
-            message = f"Telegram API error during {method}: HTTP {exc.code}"
-            if details:
-                message += f" — {details.strip()}"
-            raise RuntimeError(message) from exc
+            raise RuntimeError(f"Telegram API error: HTTP {exc.code}") from exc
         except urllib.error.URLError as exc:  # pragma: no cover
             raise RuntimeError(f"Telegram API unreachable: {exc.reason}") from exc
         try:
@@ -47,10 +40,7 @@ class TelegramAPI:
         params: Dict[str, Any] = {"chat_id": chat_id, "text": text}
         if reply_to_message_id:
             params["reply_to_message_id"] = reply_to_message_id
-        response = self._post("sendMessage", params)
-        if not isinstance(response, dict) or not response.get("ok"):
-            raise RuntimeError(f"sendMessage failed: {response}")
-        return response
+        return self._post("sendMessage", params)
 
     def send_document(self, chat_id: int | str, caption: str, file_path: str) -> Dict[str, Any]:
         # Stdlib-only upload is cumbersome; instead, notify the user where the file lives.

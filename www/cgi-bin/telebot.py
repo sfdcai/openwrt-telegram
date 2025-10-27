@@ -59,6 +59,8 @@ def get_dispatcher(cfg: Dict[str, Any]) -> Dispatcher:
     dispatcher = Dispatcher(
         plugins_dir=plugins_dir,
         logger=lambda _m: None,
+        allowed_ids=cfg.get("allowed_user_ids", []),
+        admin_ids=cfg.get("admin_user_ids", []),
         default_chat=cfg.get("chat_id_default"),
     )
     return dispatcher
@@ -139,6 +141,9 @@ def save_config(manager: ConfigManager, payload: Dict[str, Any]) -> Dict[str, An
             updated["chat_id_default"] = None
     else:
         updated["chat_id_default"] = None
+
+    updated["allowed_user_ids"] = ConfigManager.normalize_id_list(payload.get("allowed_user_ids"))
+    updated["admin_user_ids"] = ConfigManager.normalize_id_list(payload.get("admin_user_ids"))
 
     try:
         updated["poll_timeout"] = max(5, int(payload.get("poll_timeout", current.get("poll_timeout", 25))))

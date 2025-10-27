@@ -49,6 +49,22 @@ class ConfigManager:
             return "***" + token[-2:]
         return token[:3] + "…" + token[-4:]
 
+    @staticmethod
+    def normalize_id_list(value: Any) -> list[int]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            items = value
+        else:
+            items = [v.strip() for v in str(value).split(",") if v.strip()]
+        normalized: list[int] = []
+        for item in items:
+            try:
+                normalized.append(int(item))
+            except ValueError:
+                continue
+        return normalized
+
     def ensure_defaults(self, defaults: Dict[str, Any]) -> Dict[str, Any]:
         if self.path.exists():
             data = self.load()

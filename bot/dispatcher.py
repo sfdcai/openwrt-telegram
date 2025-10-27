@@ -4,7 +4,7 @@ import os
 import shlex
 import subprocess
 from pathlib import Path
-from typing import Callable, List
+from typing import Callable, Iterable, List
 
 MAX_MSG_LEN = 3900
 ADMIN_PLUGIN_NAMES = {"reboot", "poweroff"}
@@ -17,11 +17,15 @@ class Dispatcher:
         self,
         plugins_dir: str | os.PathLike[str],
         logger: Callable[[str], None],
+        allowed_ids: Iterable[int] | None = None,
+        admin_ids: Iterable[int] | None = None,
         default_chat: int | None = None,
     ):
         self.plugins_dir = Path(plugins_dir)
         self.logger = logger
-        self.default_chat = int(default_chat) if default_chat is not None else None
+        self.allowed = {int(i) for i in (allowed_ids or [])}
+        self.admins = {int(i) for i in (admin_ids or [])}
+        self.default_chat = default_chat
         extra_admin_plugins = os.environ.get("TELEBOT_ADMIN_PLUGINS", "")
         self.admin_only_plugins = {
             name.strip().lower() for name in extra_admin_plugins.split(",") if name.strip()
@@ -47,7 +51,7 @@ class Dispatcher:
             "/ping - simple heartbeat",
             "/status - system information",
             "/plugins - list available shell plugins",
-            "/run <plugin> [args] - execute a plugin",
+            "/run <plugin> [args] - execute a plugin (admins only)",
             "/log [lines] - tail the bot log",
             "/whoami - display your identifiers",
         ]
@@ -78,7 +82,7 @@ class Dispatcher:
         return ["\n".join(lines)]
 
     def _cmd_run_plugin(self, user: int, chat: int, message: int, args: list[str]) -> List[str]:
-        if not self.is_admin(user, chat):
+        if not self.is_admin(user):
             return ["Admin only."]
         if not args:
             return ["Usage: /run <plugin> [args]"]
@@ -111,18 +115,19 @@ class Dispatcher:
     # ------------------------------------------------------------------
     # Public helpers used by both the bot loop and the UI API
 
-    def authorize(self, user_id: int, chat_id: int) -> bool:
-        if self.default_chat is None:
+    def authorize(self, user_id: int) -> bool:
+        if not self.allowed and not self.admins:
             return True
-        return chat_id == self.default_chat
+        return user_id in self.allowed or user_id in self.admins
 
-    def is_admin(self, user_id: int, chat_id: int) -> bool:
-        return self.authorize(user_id, chat_id)
+    def is_admin(self, user_id: int) -> bool:
+        if not self.admins:
+            return not self.allowed or user_id in self.allowed
+        return user_id in self.admins
 
     def handle(self, user_id: int, chat_id: int, message_id: int, text: str) -> List[str]:
-        if not self.authorize(user_id, chat_id):
-            self.logger(f"ignored message from {user_id}@{chat_id}: unauthorized chat")
-            return ["Unauthorized chat."]
+        if not self.authorize(user_id):
+            return ["Unauthorized user."]
         if not text:
             return []
         try:
@@ -139,7 +144,7 @@ class Dispatcher:
         else:
             plugin_name = cmd.lstrip("/")
             self.logger(f"plugin {cmd} from {user_id}")
-            if plugin_name.lower() in self.admin_only_plugins and not self.is_admin(user_id, chat_id):
+            if plugin_name.lower() in self.admin_only_plugins and not self.is_admin(user_id):
                 return ["Admin only."]
             response = self.execute_plugin(plugin_name, args, user_id, chat_id, message_id)
             if not response:
