@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import os
 import shlex
 import subprocess
@@ -30,7 +31,7 @@ class Dispatcher:
         self.default_chat = int(default_chat) if default_chat is not None else None
         self.router = router
         self.enhanced = bool(enhanced_notifications)
-        self.uses_rich_text = False
+        self.uses_rich_text = self.enhanced
         extra_admin_plugins = os.environ.get("TELEBOT_ADMIN_PLUGINS", "")
         self.admin_only_plugins = {
             name.strip().lower() for name in extra_admin_plugins.split(",") if name.strip()
@@ -61,6 +62,35 @@ class Dispatcher:
     # Command handlers
 
     def _cmd_help(self, user: int, chat: int, message: int, args: list[str]) -> List[str]:
+        if self.enhanced:
+            commands = [
+                ("🏓", "/ping", "Heartbeat check"),
+                ("📊", "/status", "System snapshot"),
+                ("🧩", "/plugins", "List installed shell helpers"),
+                ("▶️", "/run &lt;plugin&gt; [args]", "Execute a plugin"),
+                ("🪵", "/log [lines]", "Tail the bot log"),
+                ("🪪", "/whoami", "Show your identifiers"),
+                ("🧑‍💻", "/clients", "Known devices"),
+                ("🛡️", "/router", "Router guard summary"),
+                ("✅", "/approve &lt;id|mac|ip&gt;", "Allow a device"),
+                ("🚫", "/block &lt;id|mac|ip&gt;", "Block a device"),
+                ("⏸", "/pause &lt;id|mac|ip&gt;", "Temporarily suspend"),
+                ("▶️", "/resume &lt;id|mac|ip&gt;", "Resume a client"),
+                ("⭐", "/whitelist &lt;id|mac|ip&gt;", "Always allow a device"),
+                ("🧹", "/forget &lt;id|mac&gt;", "Remove from registry"),
+                ("🩺", "/diag", "Deployment diagnostics"),
+            ]
+            lines = ["<b>🧭 Command navigator</b>"]
+            for icon, command, description in commands:
+                lines.append(f"{icon} <code>{command}</code> — {html.escape(description)}")
+            plugins = self._plugin_summary()
+            if plugins:
+                lines.append("")
+                lines.append("<b>🔌 Plugins</b>")
+                for entry in plugins:
+                    lines.append(f"• {html.escape(entry.strip())}")
+            return ["\n".join(lines)]
+
         available = [
             "Commands:",
             "/ping - simple heartbeat",
@@ -82,6 +112,8 @@ class Dispatcher:
         return ["\n".join(available + self._plugin_summary())]
 
     def _cmd_ping(self, user: int, chat: int, message: int, args: list[str]) -> List[str]:
+        if self.enhanced:
+            return ["<b>🏓 Pong!</b> <code>latency-ok</code> ✅"]
         return ["pong"]
 
     def _cmd_status(self, user: int, chat: int, message: int, args: list[str]) -> List[str]:
@@ -90,11 +122,31 @@ class Dispatcher:
         sections.append(self._safe_command_output(["uptime"]))
         sections.append(self._safe_command_output(["df", "-h", "/"]))
         status = "\n\n".join(s for s in sections if s)
+        if self.enhanced:
+            if status:
+                body = f"<b>🖥️ System snapshot</b>\n<pre>{html.escape(status)}</pre>"
+            else:
+                body = "<b>🖥️ System snapshot</b>\n<i>Status unavailable</i>"
+            return [body]
         return [status or "Status unavailable"]
 
     def _cmd_plugins(self, user: int, chat: int, message: int, args: list[str]) -> List[str]:
+        plugins = self.available_plugins()
+        if self.enhanced:
+            lines = ["<b>🧩 Available plugins</b>"]
+            if not plugins:
+                lines.append("<i>No executable *.sh files found in plugins directory.</i>")
+            else:
+                for plugin in plugins:
+                    label = html.escape(plugin["command"])
+                    desc = plugin.get("description")
+                    if desc:
+                        lines.append(f"• <code>{label}</code> — {html.escape(desc)}")
+                    else:
+                        lines.append(f"• <code>{label}</code>")
+            return ["\n".join(lines)]
         lines = ["Available plugins:"]
-        for plugin in self.available_plugins():
+        for plugin in plugins:
             desc = plugin.get("description")
             label = plugin["command"]
             if desc:
@@ -124,9 +176,25 @@ class Dispatcher:
         log_path = Path(self._log_path())
         if not log_path.exists():
             return [f"Log file not found: {log_path}"]
-        return [self._safe_command_output(["tail", f"-n{lines}", str(log_path)])]
+        output = self._safe_command_output(["tail", f"-n{lines}", str(log_path)])
+        if self.enhanced:
+            heading = f"<b>🪵 Log tail</b> (<code>{lines}</code> lines)"
+            if not output:
+                return [heading + "\n<i>No log entries found.</i>"]
+            return [heading + f"\n<pre>{html.escape(output)}</pre>"]
+        return [output]
 
     def _cmd_whoami(self, user: int, chat: int, message: int, args: list[str]) -> List[str]:
+        if self.enhanced:
+            lines = [
+                "<b>🪪 Identity</b>",
+                f"• <b>User ID:</b> <code>{user}</code>",
+                f"• <b>Chat ID:</b> <code>{chat}</code>",
+                f"• <b>Message ID:</b> <code>{message}</code>",
+            ]
+            if self.default_chat:
+                lines.append(f"• <b>Default chat ID:</b> <code>{self.default_chat}</code>")
+            return ["\n".join(lines)]
         info = [
             f"User ID: {user}",
             f"Chat ID: {chat}",
@@ -141,12 +209,17 @@ class Dispatcher:
             return ["Router controls are disabled in configuration."]
         clients = self.router.list_clients()
         if not clients:
+            if self.enhanced:
+                return ["<b>🧑‍💻 Known clients</b>\n<i>No clients have been discovered yet.</i>"]
             return ["No clients have been discovered yet."]
         if self.enhanced:
-            header = "ID       MAC               Hostname                  IP              Status     Last Seen"
-            lines = ["Known clients:", header, "-" * len(header)]
-        else:
-            lines = ["Known clients:"]
+            header = "State   ID       MAC               Hostname                  IP              Status (last seen)"
+            table = [header, "-" * len(header)]
+            for client in clients:
+                table.append(self._format_client_line(client))
+            body = "\n".join(table)
+            return ["<b>🧑‍💻 Known clients</b>\n<pre>" + html.escape(body) + "</pre>"]
+        lines = ["Known clients:"]
         for client in clients:
             lines.append(self._format_client_line(client))
         return ["\n".join(lines)]
@@ -155,6 +228,48 @@ class Dispatcher:
         if not self.router:
             return ["Router controls are disabled in configuration."]
         summary = self.router.summary()
+        if self.enhanced:
+            lines = ["<b>🛡️ Router guard summary</b>"]
+            lines.append(
+                "• <b>Clients discovered:</b> "
+                + str(summary.get("total_clients", 0))
+                + f" (online {summary.get('online_clients', 0)})"
+            )
+            counts = summary.get("counts", {})
+            if counts:
+                pretty = ", ".join(f"{html.escape(str(k))}={v}" for k, v in counts.items())
+                lines.append(f"• <b>Status counts:</b> {pretty}")
+                graph = self._render_counts_graph(counts)
+                if graph:
+                    lines.append("<pre>" + html.escape(graph) + "</pre>")
+            nft = summary.get("nft") or {}
+            if nft:
+                parts = [
+                    f"{html.escape(key)}={'✅' if value else '⚠️'}"
+                    for key, value in nft.items()
+                ]
+                lines.append(f"• <b>nftables:</b> {', '.join(parts)}")
+            whitelist = summary.get("whitelist", [])
+            if whitelist:
+                extra = ""
+                if len(whitelist) > 10:
+                    extra = f" (+{len(whitelist) - 10} more)"
+                listing = ", ".join(html.escape(item) for item in whitelist[:10])
+                lines.append(f"• <b>Whitelisted:</b> {listing}{extra}")
+            state_path = summary.get("state_file")
+            if state_path:
+                lines.append(f"• State file: <code>{html.escape(str(state_path))}</code>")
+            firewall = summary.get("firewall") or {}
+            if firewall:
+                include_path = firewall.get("include_path")
+                include_exists = firewall.get("include_exists")
+                label = "present" if include_exists else "missing"
+                section = firewall.get("include_section")
+                detail = f" <code>{html.escape(str(include_path))}</code>" if include_path else ""
+                lines.append(
+                    f"• Firewall include ({html.escape(str(section))}): {label}{detail}"
+                )
+            return ["\n".join(lines)]
         lines = ["Router guard summary:"]
         lines.append(
             " • Clients discovered: "
@@ -374,7 +489,18 @@ class Dispatcher:
             return ["Unknown client identifier"]
         except Exception as exc:  # pragma: no cover
             return [f"Failed to update client: {exc}"]
-        return [f"{verb.capitalize()} {router.describe_client(client)}"]
+        description = router.describe_client(client)
+        if self.enhanced:
+            emoji_map = {
+                "approved": "🟢",
+                "blocked": "🚫",
+                "paused": "⏸",
+                "resumed": "▶️",
+                "whitelisted": "⭐",
+            }
+            emoji = emoji_map.get(verb, "✅")
+            return [f"<b>{emoji} {verb.capitalize()}</b>\n<code>{html.escape(description)}</code>"]
+        return [f"{verb.capitalize()} {description}"]
 
     def _handle_client_callback(self, action: str, identifier: str) -> dict[str, str]:
         router = self.router
@@ -394,8 +520,13 @@ class Dispatcher:
             return {"ack": "Invalid"}
         except Exception as exc:  # pragma: no cover
             return {"ack": "Failed", "message": f"Failed to update client: {exc}"}
-        message = f"{prefix} {router.describe_client(client)}" if router else prefix.strip()
-        return {"ack": prefix.strip() or "Done", "message": message}
+        ack = prefix.strip() or "Done"
+        description = router.describe_client(client) if router else ""
+        if self.enhanced and description:
+            message = f"<b>{html.escape(ack)}</b>\n<code>{html.escape(description)}</code>"
+        else:
+            message = f"{ack} {description}".strip()
+        return {"ack": ack, "message": message}
 
     def _format_client_line(self, client: dict) -> str:
         status = client.get("status", "unknown")
@@ -412,7 +543,7 @@ class Dispatcher:
         mac_display = mac or "?"
         if self.enhanced:
             return (
-                f"{badge} {ident:<8} {mac_display:<18} {hostname[:22]:<22} "
+                f"{badge:<5} {ident:<8} {mac_display:<18} {hostname[:22]:<22} "
                 f"{ip:<15} {status:<9} ({state})"
             )
         return f"{badge} {hostname} {ident} {mac_display} {ip} — {status} ({state})"

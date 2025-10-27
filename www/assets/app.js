@@ -29,7 +29,10 @@
     clientStats: document.querySelector('#client-stats'),
     toast: document.querySelector('#toast'),
     appVersion: document.querySelector('#app-version'),
+    appRemote: document.querySelector('#app-remote'),
+    appDelta: document.querySelector('#app-delta'),
     appBase: document.querySelector('#app-base'),
+    statusVersion: document.querySelector('#status-version'),
   };
 
   const storedToken = localStorage.getItem(STORAGE_KEY) || '';
@@ -194,12 +197,89 @@
     form.querySelector('#log-file').value = config.log_file || '';
     form.querySelector('#ui-token').value = config.ui_api_token || '';
     form.querySelector('#ui-base').value = config.ui_base_url || '';
+    form.querySelector('#version-endpoint').value = config.version_endpoint || '';
+    const ttlField = form.querySelector('#version-cache-ttl');
+    if (ttlField) {
+      ttlField.value = config.version_cache_ttl ?? '';
+    }
+    const enhancedToggle = form.querySelector('#enhanced-notifications');
+    if (enhancedToggle) {
+      enhancedToggle.checked = Boolean(config.enhanced_notifications);
+    }
+    const scheduleField = form.querySelector('#notification-schedule');
+    if (scheduleField) {
+      if (Array.isArray(config.notification_schedule)) {
+        scheduleField.value = config.notification_schedule.join(', ');
+      } else if (typeof config.notification_schedule === 'string') {
+        scheduleField.value = config.notification_schedule;
+      } else {
+        scheduleField.value = '';
+      }
+    }
     form.querySelector('#client-state').value = config.client_state_file || '';
     form.querySelector('#nft-table').value = config.nft_table || '';
     form.querySelector('#nft-chain').value = config.nft_chain || '';
     form.querySelector('#nft-block').value = config.nft_block_set || '';
     form.querySelector('#nft-allow').value = config.nft_allow_set || '';
     form.querySelector('#client-whitelist').value = (config.client_whitelist || []).join(', ');
+  }
+
+  function applyBadgeState(element, label, state, title) {
+    if (!element) return;
+    element.textContent = label;
+    element.title = title || '';
+    element.classList.remove('hero__badge--ok', 'hero__badge--warn', 'hero__badge--error', 'hero__badge--idle');
+    if (state) {
+      element.classList.add(`hero__badge--${state}`);
+    }
+  }
+
+  function updateVersionStatus(version = {}) {
+    if (elements.appVersion) {
+      const installed = version.app || 'dev';
+      elements.appVersion.textContent = `Installed ${installed}`;
+    }
+    if (elements.appBase) {
+      const base = version.base_dir;
+      elements.appBase.textContent = base ? `Base ${base}` : '';
+    }
+    const remote = version.remote || '';
+    if (elements.appRemote) {
+      elements.appRemote.textContent = remote ? `Online ${remote}` : 'Online —';
+      elements.appRemote.title = version.remote_source || '';
+    }
+    const statusInfo = (() => {
+      if (version.remote_error) {
+        return { label: '⚠️ Check failed', state: 'error', title: version.remote_error };
+      }
+      switch (version.status) {
+        case 'up_to_date':
+          return { label: '🟢 Up to date', state: 'ok' };
+        case 'update_available':
+          return { label: '🟡 Update available', state: 'warn' };
+        case 'ahead':
+          return { label: '🔵 Ahead of release', state: 'ok' };
+        case 'unknown':
+        default:
+          return { label: '… Checking', state: 'idle' };
+      }
+    })();
+    applyBadgeState(elements.appDelta, statusInfo.label, statusInfo.state, statusInfo.title);
+
+    if (elements.statusVersion) {
+      const installed = version.app || 'dev';
+      let summary = `Installed ${installed}`;
+      if (remote) {
+        summary += ` • Remote ${remote}`;
+      }
+      summary += ` • ${statusInfo.label}`;
+      const checked = version.remote_checked ? new Date(version.remote_checked) : null;
+      if (checked && !Number.isNaN(checked.getTime())) {
+        summary += `\nLast check ${checked.toLocaleString()}`;
+      }
+      elements.statusVersion.textContent = summary;
+      elements.statusVersion.title = version.remote_source || '';
+    }
   }
 
   function populatePlugins(plugins = []) {
@@ -243,14 +323,7 @@
       }
     }
     if (data.version) {
-      if (elements.appVersion) {
-        const version = data.version.app || 'dev';
-        elements.appVersion.textContent = `Version ${version}`;
-      }
-      if (elements.appBase) {
-        const base = data.version.base_dir;
-        elements.appBase.textContent = base ? `Base ${base}` : '';
-      }
+      updateVersionStatus(data.version);
     }
     populateConfig(data.config);
     populatePlugins(data.plugins);
@@ -292,6 +365,10 @@
       log_file: elements.configForm.querySelector('#log-file').value,
       ui_api_token: elements.configForm.querySelector('#ui-token').value,
       ui_base_url: elements.configForm.querySelector('#ui-base').value,
+      version_endpoint: elements.configForm.querySelector('#version-endpoint').value,
+      version_cache_ttl: elements.configForm.querySelector('#version-cache-ttl').value,
+      enhanced_notifications: elements.configForm.querySelector('#enhanced-notifications').checked,
+      notification_schedule: elements.configForm.querySelector('#notification-schedule').value,
       client_state_file: elements.configForm.querySelector('#client-state').value,
       nft_table: elements.configForm.querySelector('#nft-table').value,
       nft_chain: elements.configForm.querySelector('#nft-chain').value,
