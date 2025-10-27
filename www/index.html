@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenWRT TeleBot Control Panel</title>
+    <link rel="stylesheet" href="assets/styles.css" />
+    <script defer src="assets/app.js"></script>
+  </head>
+  <body>
+    <header class="hero">
+      <div class="hero__content">
+        <h1>OpenWRT TeleBot</h1>
+        <p>Manage your Telegram automation bot directly from your router.</p>
+      </div>
+    </header>
+
+    <main class="container">
+      <section class="card" id="auth-card">
+        <h2>API Access</h2>
+        <p>
+          Set the access token that matches <code>ui_api_token</code> in
+          <code>config.json</code>. The token is stored locally in your browser.
+        </p>
+        <div class="form-grid">
+          <label for="api-token">UI Access Token</label>
+          <input type="password" id="api-token" autocomplete="off" />
+          <button id="btn-save-token" class="btn btn-primary">Save token</button>
+          <button id="btn-clear-token" class="btn btn-outline">Clear token</button>
+        </div>
+      </section>
+
+      <section class="card" id="status-card">
+        <div class="card__header">
+          <h2>Bot status</h2>
+          <div class="card__actions">
+            <button id="btn-refresh" class="btn btn-icon" title="Refresh status">⟳</button>
+            <button id="btn-start" class="btn btn-success">Start</button>
+            <button id="btn-stop" class="btn btn-danger">Stop</button>
+          </div>
+        </div>
+        <div class="status-grid">
+          <div>
+            <strong>Process state</strong>
+            <p id="status-running">—</p>
+          </div>
+          <div>
+            <strong>Last update</strong>
+            <p id="status-updated">—</p>
+          </div>
+        </div>
+        <pre id="system-info" class="code-block">Waiting for data…</pre>
+      </section>
+
+      <section class="card" id="config-card">
+        <div class="card__header">
+          <h2>Telegram configuration</h2>
+          <div class="card__actions">
+            <button id="btn-save-config" class="btn btn-primary">Save changes</button>
+            <button id="btn-test" class="btn btn-outline">Send test message</button>
+          </div>
+        </div>
+        <form id="config-form" class="form-grid">
+          <label for="bot-token">Bot token</label>
+          <input id="bot-token" name="bot_token" type="password" autocomplete="off" placeholder="123456789:ABC" />
+
+          <label for="chat-default">Default chat ID</label>
+          <input id="chat-default" name="chat_id_default" type="number" />
+
+          <label for="allowed-ids">Allowed user IDs</label>
+          <input id="allowed-ids" name="allowed_user_ids" type="text" placeholder="111111,222222" />
+
+          <label for="admin-ids">Admin user IDs</label>
+          <input id="admin-ids" name="admin_user_ids" type="text" placeholder="111111" />
+
+          <label for="poll-timeout">Poll timeout (seconds)</label>
+          <input id="poll-timeout" name="poll_timeout" type="number" min="5" max="100" />
+
+          <label for="plugins-dir">Plugins directory</label>
+          <input id="plugins-dir" name="plugins_dir" type="text" />
+
+          <label for="log-file">Log file path</label>
+          <input id="log-file" name="log_file" type="text" />
+
+          <label for="ui-token">UI API token</label>
+          <input id="ui-token" name="ui_api_token" type="text" placeholder="changeme" />
+
+          <label for="ui-base">UI base URL</label>
+          <input id="ui-base" name="ui_base_url" type="text" placeholder="/telebot" />
+        </form>
+      </section>
+
+      <section class="card" id="message-card">
+        <div class="card__header">
+          <h2>Send a message</h2>
+          <div class="card__actions">
+            <button id="btn-send-message" class="btn btn-primary">Send</button>
+          </div>
+        </div>
+        <div class="form-grid">
+          <label for="message-chat">Chat ID (leave empty for default)</label>
+          <input id="message-chat" type="number" />
+          <label for="message-text">Message</label>
+          <textarea id="message-text" rows="3" placeholder="Hello from OpenWRT!" ></textarea>
+        </div>
+      </section>
+
+      <section class="card" id="plugins-card">
+        <div class="card__header">
+          <h2>Plugins</h2>
+          <div class="card__actions">
+            <button id="btn-run-plugin" class="btn btn-primary">Run selected</button>
+          </div>
+        </div>
+        <div class="plugin-grid">
+          <select id="plugin-select"></select>
+          <input id="plugin-args" type="text" placeholder="Optional arguments" />
+        </div>
+        <pre id="plugin-output" class="code-block">Select a plugin and run it to view output.</pre>
+      </section>
+
+      <section class="card" id="logs-card">
+        <div class="card__header">
+          <h2>Recent log output</h2>
+          <div class="card__actions">
+            <button id="btn-refresh-logs" class="btn btn-outline">Refresh</button>
+          </div>
+        </div>
+        <pre id="log-output" class="code-block">Logs will appear here.</pre>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>
