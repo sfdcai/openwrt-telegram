@@ -62,7 +62,27 @@ def ensure_authenticated(cfg: Dict[str, Any], query: Dict[str, list[str]]) -> bo
     provided = os.environ.get("HTTP_X_AUTH_TOKEN")
     if not provided:
         provided = (query.get("token") or [""])[0]
+    if not provided:
+        provided = os.environ.get("HTTP_AUTHORIZATION", "").removeprefix("Bearer ")
     return provided == expected
+
+
+def unauthorized_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    hint_parts = [
+        "Save the UI API token locally via the dashboard form and click ‘Save token’.",
+    ]
+    config_path = cfg.get("config_path") or str(CONFIG_PATH)
+    hint_parts.append(f"Token source: {config_path}")
+    if cfg.get("ui_api_token"):
+        hint_parts.append("Ensure the browser is sending the same value in the X-Auth-Token header.")
+    else:
+        hint_parts.append("No UI token configured; leave the field blank or clear stored tokens.")
+    return {
+        "ok": False,
+        "error": "Unauthorized",
+        "hint": " ".join(hint_parts),
+        "token_configured": bool(cfg.get("ui_api_token")),
+    }
 
 
 def get_dispatcher(cfg: Dict[str, Any], router: RouterController | None = None) -> Dispatcher:
@@ -217,24 +237,19 @@ def main() -> None:
         respond(500, {"ok": False, "error": "config.json not found"})
         return
     cfg.setdefault("base_dir", str(BASE_DIR))
+    cfg.setdefault("config_path", str(CONFIG_PATH))
     log_file = cfg.get("log_file")
 
     query = parse_qs(os.environ.get("QUERY_STRING", ""))
     if not ensure_authenticated(cfg, query):
-        expected = cfg.get("ui_api_token", "") or ""
+        remote = os.environ.get("REMOTE_ADDR", "?")
+        token_present = bool(cfg.get("ui_api_token"))
         log(
-            f"UI authentication failed (token configured={'yes' if expected else 'no'})",
+            f"UI authentication failed from {remote} (token configured={'yes' if token_present else 'no'})",
             log_file,
             level="WARNING",
         )
-        respond(
-            401,
-            {
-                "ok": False,
-                "error": "Unauthorized",
-                "hint": "Set the UI API token in config.json or supply it via the X-Auth-Token header or token query parameter.",
-            },
-        )
+        respond(401, unauthorized_response(cfg))
         return
 
     action = (query.get("action") or [""])[0]
@@ -281,6 +296,10 @@ def main() -> None:
                 "version": {
                     "app": read_version(),
                     "base_dir": str(BASE_DIR),
+                },
+                "auth": {
+                    "token_required": bool(cfg.get("ui_api_token")),
+                    "config_path": cfg.get("config_path"),
                 },
             }
             respond(200, response)

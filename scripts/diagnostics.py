@@ -7,6 +7,8 @@ import json
 import shutil
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
@@ -124,6 +126,33 @@ def check_uhttpd() -> list[str]:
     return checks
 
 
+def check_ui(cfg: Dict[str, Any]) -> list[str]:
+    checks: list[str] = []
+    base = cfg.get("ui_base_url", "/telebot")
+    checks.append(f"UI base URL: {base}")
+    checks.append(f"UI API token configured: {'yes' if cfg.get('ui_api_token') else 'no'}")
+    cgi_fs = Path("/www/cgi-bin/telebot.py")
+    checks.append(f"CGI script deployed: {'yes' if cgi_fs.exists() else 'no'}")
+    assets_root = Path("/www") / base.strip("/") / "index.html"
+    checks.append(f"Dashboard index present: {'yes' if assets_root.exists() else 'no'}")
+    url = f"http://127.0.0.1/cgi-bin/telebot.py?action=status"
+    request = urllib.request.Request(url)
+    token = cfg.get("ui_api_token")
+    if token:
+        request.add_header("X-Auth-Token", token)
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            checks.append(f"Local CGI status: HTTP {response.status}")
+    except urllib.error.HTTPError as exc:
+        checks.append(f"Local CGI status: HTTP {exc.code}")
+        body = exc.read().decode("utf-8", errors="ignore")
+        if body:
+            checks.append(f"CGI response: {body[:200]}")
+    except Exception as exc:  # pragma: no cover - diagnostics
+        checks.append(f"Local CGI status: {type(exc).__name__}: {exc}")
+    return checks
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Diagnose an OpenWRT TeleBot installation")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Path to config.json")
@@ -164,6 +193,10 @@ def main() -> None:
 
     print("\n== uhttpd status ==")
     for line in check_uhttpd():
+        print(line)
+
+    print("\n== Web UI check ==")
+    for line in check_ui(cfg):
         print(line)
 
 

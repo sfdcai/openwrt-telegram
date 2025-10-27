@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional
@@ -42,10 +43,13 @@ class Dispatcher:
             "/log": self._cmd_log_tail,
             "/whoami": self._cmd_whoami,
             "/clients": self._cmd_clients,
+            "/router": self._cmd_router,
             "/approve": self._cmd_approve,
             "/block": self._cmd_block,
             "/whitelist": self._cmd_whitelist,
             "/forget": self._cmd_forget,
+            "/diag": self._cmd_diagnostics,
+            "/diagnostics": self._cmd_diagnostics,
         }
 
     # ------------------------------------------------------------------
@@ -61,10 +65,12 @@ class Dispatcher:
             "/log [lines] - tail the bot log",
             "/whoami - display your identifiers",
             "/clients - list known devices",
+            "/router - router guard summary",
             "/approve <mac|ip> - allow a device",
             "/block <mac|ip> - block a device",
             "/whitelist <mac|ip> - always allow a device",
             "/forget <mac> - remove device from registry",
+            "/diag - run deployment diagnostics",
         ]
         return ["\n".join(available + self._plugin_summary())]
 
@@ -134,6 +140,36 @@ class Dispatcher:
             lines.append(self._format_client_line(client))
         return ["\n".join(lines)]
 
+    def _cmd_router(self, user: int, chat: int, message: int, args: list[str]) -> List[str]:
+        if not self.router:
+            return ["Router controls are disabled in configuration."]
+        summary = self.router.summary()
+        lines = ["Router guard summary:"]
+        lines.append(
+            " • Clients discovered: "
+            + str(summary.get("total_clients", 0))
+            + f" (online {summary.get('online_clients', 0)})"
+        )
+        counts = summary.get("counts", {})
+        if counts:
+            pretty = ", ".join(f"{key}={value}" for key, value in counts.items())
+            lines.append(f" • Status counts: {pretty}")
+        nft = summary.get("nft") or {}
+        if nft:
+            lines.append(
+                " • nftables: "
+                + ", ".join(f"{key}={'yes' if value else 'no'}" for key, value in nft.items())
+            )
+        whitelist = summary.get("whitelist", [])
+        if whitelist:
+            lines.append(" • Whitelisted: " + ", ".join(whitelist[:10]))
+            if len(whitelist) > 10:
+                lines[-1] += f" (+{len(whitelist) - 10} more)"
+        state_path = summary.get("state_file")
+        if state_path:
+            lines.append(f"State file: {state_path}")
+        return ["\n".join(lines)]
+
     def _cmd_approve(self, user: int, chat: int, message: int, args: list[str]) -> List[str]:
         return self._client_action(args, self.router.approve if self.router else None, "Usage: /approve <mac|ip>", "approved")
 
@@ -156,6 +192,19 @@ class Dispatcher:
             return ["Invalid MAC address"]
         except Exception as exc:
             return [f"Failed to remove: {exc}"]
+
+    def _cmd_diagnostics(self, user: int, chat: int, message: int, args: list[str]) -> List[str]:
+        base_dir = Path(__file__).resolve().parents[1]
+        script = base_dir / "scripts" / "diagnostics.py"
+        if not script.exists():
+            return ["Diagnostics script not found."]
+        python = os.environ.get("TELEBOT_PYTHON", sys.executable or "python3")
+        config = os.environ.get("TELEBOT_CONFIG")
+        command = [python, str(script)]
+        if config:
+            command.extend(["--config", config])
+        output = self._safe_command_output(command)
+        return [output or "Diagnostics completed with no output."]
 
     # ------------------------------------------------------------------
     # Public helpers used by both the bot loop and the UI API

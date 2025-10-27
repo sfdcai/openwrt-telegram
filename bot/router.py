@@ -364,6 +364,25 @@ class RouterController:
         script = f"delete element inet {self.nft_table} {set_name} {{ {mac} }}"
         self._run_nft(script)
 
+    def _nft_resource_exists(self, kind: str, name: str | None = None) -> bool:
+        if not self._nft_supported or not self.nft_binary:
+            return False
+        if kind == "table":
+            if not self.nft_table:
+                return False
+            command = [self.nft_binary, "list", "table", "inet", self.nft_table]
+        elif kind == "set":
+            if not self.nft_table or not name:
+                return False
+            command = [self.nft_binary, "list", "set", "inet", self.nft_table, name]
+        else:
+            return False
+        try:
+            subprocess.check_output(command, stderr=subprocess.DEVNULL, timeout=5)
+            return True
+        except Exception:
+            return False
+
     # ------------------------------------------------------------------
     # Client manipulation
 
@@ -380,6 +399,33 @@ class RouterController:
             clients.append(record)
         clients.sort(key=lambda item: (self._status_order(item.get("status")), -(item.get("last_seen") or 0)))
         return clients
+
+    def summary(self) -> Dict[str, Any]:
+        clients = self.list_clients()
+        counts: Dict[str, int] = {}
+        online = 0
+        now = _now()
+        for client in clients:
+            status = client.get("status", "unknown")
+            counts[status] = counts.get(status, 0) + 1
+            last_seen = int(client.get("last_seen") or 0)
+            if last_seen and now - last_seen < 120:
+                online += 1
+        nft_status = {
+            "supported": self._nft_supported,
+            "ready": self._nft_ready,
+            "table_exists": self._nft_resource_exists("table"),
+            "block_set_exists": self._nft_resource_exists("set", self.nft_block_set),
+            "allow_set_exists": self._nft_resource_exists("set", self.nft_allow_set),
+        }
+        return {
+            "total_clients": len(clients),
+            "online_clients": online,
+            "counts": counts,
+            "whitelist": sorted(self.whitelist),
+            "state_file": str(self.state_path),
+            "nft": nft_status,
+        }
 
     def find_client(self, identifier: str) -> Optional[str]:
         ident = identifier.strip().lower()

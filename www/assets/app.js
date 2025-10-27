@@ -32,11 +32,22 @@
     appBase: document.querySelector('#app-base'),
   };
 
+  const storedToken = localStorage.getItem(STORAGE_KEY) || '';
   const state = {
-    token: localStorage.getItem(STORAGE_KEY) || '',
+    token: storedToken,
     config: null,
     clients: [],
+    retryingToken: false,
+    lastTypedToken: '',
   };
+
+  const queryToken = new URLSearchParams(window.location.search).get('token');
+  if (queryToken) {
+    state.token = queryToken.trim();
+    if (state.token) {
+      localStorage.setItem(STORAGE_KEY, state.token);
+    }
+  }
 
   const STATUS_META = {
     pending: { label: 'Pending', icon: '🟡' },
@@ -54,6 +65,54 @@
     showToast.timeout = setTimeout(() => {
       elements.toast.classList.remove('toast--visible');
     }, 4000);
+  }
+
+  function setToken(value, { persist = true, notify = true, refresh = true } = {}) {
+    const token = (value || '').trim();
+    state.token = token;
+    state.lastTypedToken = token;
+    if (persist) {
+      if (token) {
+        localStorage.setItem(STORAGE_KEY, token);
+      } else {
+        localStorage.removeItem(STORAGE_KEY);
+      }
+    }
+    updateTokenInput();
+    if (notify) {
+      showToast(token ? 'Token saved locally' : 'Token cleared');
+    }
+    if (refresh) {
+      refreshAll(true);
+    }
+  }
+
+  function persistTokenFromInput(options = {}) {
+    if (!elements.tokenInput) return false;
+    const typed = elements.tokenInput.value.trim();
+    if (!typed) {
+      if (!state.token) {
+        return false;
+      }
+      setToken('', { ...options, notify: options.notify ?? false, refresh: options.refresh ?? false });
+      return true;
+    }
+    if (!options.force && typed === state.token) {
+      return false;
+    }
+    setToken(typed, options);
+    return true;
+  }
+
+  function maybeAdoptTokenFromInput() {
+    if (!elements.tokenInput) return false;
+    const typed = elements.tokenInput.value.trim();
+    if (!typed || typed === state.token || typed === state.lastTypedToken) {
+      return false;
+    }
+    state.lastTypedToken = typed;
+    setToken(typed, { persist: true, notify: false, refresh: false });
+    return true;
   }
 
   async function apiRequest(action, options = {}) {
@@ -82,21 +141,38 @@
       enhanced.response = { status: response.status, body: data };
       console.error('API error', action, { status: response.status, data });
       if (response.status === 401) {
-        handleUnauthorized(data);
+        const retried = handleUnauthorized(action, data);
+        enhanced.retrying = retried;
       }
       throw enhanced;
     }
     return data;
   }
 
-  function handleUnauthorized(data) {
-    const hint = (data && data.hint) ? ` — ${data.hint}` : '';
-    showToast(`Unauthorized${hint}`, 'error');
+  function handleUnauthorized(action, data) {
+    const hint = data && data.hint ? ` — ${data.hint}` : '';
+    const tokenConfigured = data && Object.prototype.hasOwnProperty.call(data, 'token_configured')
+      ? data.token_configured
+      : null;
     if (elements.tokenInput) {
       elements.tokenInput.classList.add('input--highlight');
       elements.tokenInput.focus();
       setTimeout(() => elements.tokenInput.classList.remove('input--highlight'), 1500);
+      if (tokenConfigured === false) {
+        elements.tokenInput.placeholder = 'Leave blank when UI token disabled';
+      } else if (tokenConfigured === true) {
+        elements.tokenInput.placeholder = 'Enter the UI API token and save it locally';
+      }
     }
+    if (action === 'status' && maybeAdoptTokenFromInput()) {
+      state.retryingToken = true;
+      showToast('Trying token from the form…');
+      window.setTimeout(() => refreshAll(true), 200);
+      return true;
+    }
+    state.retryingToken = false;
+    showToast(`Unauthorized${hint}`, 'error');
+    return false;
   }
 
   function updateTokenInput() {
@@ -158,6 +234,13 @@
     if (elements.logOutput && data.log_tail !== undefined) {
       elements.logOutput.textContent = data.log_tail || 'No log entries found.';
     }
+    if (data.auth && elements.tokenInput) {
+      if (data.auth.token_required) {
+        elements.tokenInput.placeholder = 'Enter the UI API token and save it locally';
+      } else {
+        elements.tokenInput.placeholder = 'Leave blank when UI token disabled';
+      }
+    }
     if (data.version) {
       if (elements.appVersion) {
         const version = data.version.app || 'dev';
@@ -181,12 +264,17 @@
   async function refreshAll(silent = false) {
     try {
       const data = await apiRequest('status');
+      state.retryingToken = false;
+      state.lastTypedToken = '';
       renderStatus(data);
       if (!silent) {
         showToast('Status updated');
       }
     } catch (error) {
       console.error('Status refresh failed', error);
+      if (error.retrying) {
+        return;
+      }
       if (!silent) {
         showToast(error.message || String(error), 'error');
       }
@@ -456,17 +544,22 @@
 
   function bindEvents() {
     elements.saveToken?.addEventListener('click', () => {
-      state.token = elements.tokenInput.value.trim();
-      localStorage.setItem(STORAGE_KEY, state.token);
-      showToast('Token saved locally');
-      refreshAll(true);
+      persistTokenFromInput({ notify: true, refresh: true, force: true });
     });
 
     elements.clearToken?.addEventListener('click', () => {
-      localStorage.removeItem(STORAGE_KEY);
-      state.token = '';
-      updateTokenInput();
-      showToast('Token cleared');
+      setToken('', { notify: true, refresh: true });
+    });
+
+    elements.tokenInput?.addEventListener('change', () => {
+      persistTokenFromInput({ notify: false, refresh: false });
+    });
+
+    elements.tokenInput?.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        persistTokenFromInput({ notify: true, refresh: true, force: true });
+      }
     });
 
     elements.refresh?.addEventListener('click', () => refreshAll());
@@ -506,9 +599,5 @@
 
   updateTokenInput();
   bindEvents();
-  if (state.token) {
-    refreshAll(true);
-    refreshLogs(true);
-    refreshClients(true);
-  }
+  refreshAll(true);
 })();

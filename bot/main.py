@@ -63,6 +63,11 @@ def configure_environment(cfg: Dict[str, Any]) -> None:
     plugins_dir = cfg.get("plugins_dir")
     if plugins_dir:
         os.environ["TELEBOT_PLUGINS"] = str(plugins_dir)
+    base_dir = cfg.get("base_dir") or str(BASE_DIR)
+    os.environ.setdefault("TELEBOT_BASE", str(base_dir))
+    config_path = cfg.get("config_path")
+    if config_path:
+        os.environ["TELEBOT_CONFIG"] = str(config_path)
 
 
 def poll_once(
@@ -149,6 +154,7 @@ def poll_once(
 def run_bot(config_path: Path, once: bool = False) -> None:
     cfg = load_configuration(config_path)
     cfg.setdefault("base_dir", str(BASE_DIR))
+    cfg.setdefault("config_path", str(config_path))
     log_file = cfg.get("log_file")
     poll_timeout = int(cfg.get("poll_timeout", 25))
     token = cfg.get("bot_token")
@@ -164,6 +170,12 @@ def run_bot(config_path: Path, once: bool = False) -> None:
             "plugins_dir": cfg.get("plugins_dir"),
         }),
         log_file,
+    )
+
+    log(
+        "UI API token configured=" + ("yes" if cfg.get("ui_api_token") else "no"),
+        log_file,
+        level="DEBUG",
     )
 
     configure_environment(cfg)

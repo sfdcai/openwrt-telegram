@@ -102,6 +102,12 @@ masked when displayed and only updated when explicitly changed. The bot accepts
 messages only from the configured default chat ID, so make sure it matches your
 personal conversation with the bot.
 
+When `ui_api_token` is set, paste the same value into the dashboard's **API
+token** field and press <kbd>Enter</kbd> or click **Save token**. The UI stores
+the value locally and automatically retries it after unauthorized responses. You
+can also append `?token=YOUR_TOKEN` to the dashboard URL for quick access on new
+devices.
+
 ## Running the bot
 
 ```
@@ -111,6 +117,24 @@ personal conversation with the bot.
 
 The service uses `procd` for supervision. Logs are written to the path defined
 in `config.json`.
+
+### Telegram commands
+
+The dispatcher responds to the following built-in commands:
+
+- `/ping` – heartbeat check.
+- `/status` – core system information.
+- `/plugins` – list executable shell plugins.
+- `/run <plugin> [args]` – run a plugin (admin-only for critical scripts).
+- `/log [lines]` – tail the bot log.
+- `/whoami` – echo your Telegram identifiers.
+- `/clients` – show all known clients and their status.
+- `/router` – summarise approval counts and nftables health.
+- `/approve <mac|ip>` – approve a pending or blocked client.
+- `/block <mac|ip>` – block a client.
+- `/whitelist <mac|ip>` – permanently allow a client.
+- `/forget <mac>` – remove a client from the registry.
+- `/diag` – run the bundled diagnostics report directly from chat.
 
 ## Web UI
 
@@ -140,6 +164,18 @@ you to:
 All operations are logged to the configured log file, and the CGI/UI layer will
 report errors back to the browser while appending stack traces to the log for
 easy troubleshooting.
+
+### Logs and troubleshooting
+
+- Default log path: `/var/log/openwrt-telebot.log` (customisable via
+  `config.json`). View it from the dashboard, `/log` command or BusyBox `tail`.
+- The CGI script also logs to the same file; UI authentication failures now
+  include the requesting IP address and hints for correcting the token.
+- Run the diagnostics helper either from SSH (`python3 scripts/diagnostics.py`)
+  or Telegram (`/diag`) to validate services, nftables, web UI deployment and
+  API authentication in one step.
+- Use `/router` to confirm client counts and nftables availability without
+  leaving Telegram.
 
 ### Diagnose issues quickly
 
