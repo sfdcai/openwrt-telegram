@@ -1,0 +1,14 @@
+#!/bin/sh
+# Send a quick message to Telegram using config.json
+# Usage: tele-notify "message text" [chat_id]
+BASE="/opt/openwrt-telebot"
+CONF="$BASE/config/config.json"
+MSG="$1"
+CHAT_ID="$2"
+[ -z "$MSG" ] && exit 1
+TOKEN=$(sed -n 's/.*"bot_token"\s*:\s*"\([^"]*\)".*/\1/p' "$CONF")
+[ -z "$CHAT_ID" ] && CHAT_ID=$(sed -n 's/.*"chat_id_default"\s*:\s*\([0-9]*\).*/\1/p' "$CONF")
+
+
+URL="https://api.telegram.org/bot$TOKEN/sendMessage"
+curl -s -X POST "$URL" -d "chat_id=$CHAT_ID" --data-urlencode "text=$MSG" >/dev/null 2>&1
