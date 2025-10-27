@@ -1,9 +1,15 @@
 {
-"bot_token": "123456789:YOUR_TELEGRAM_BOT_TOKEN",
-"allowed_user_ids": [111111111],
-"admin_user_ids": [111111111],
-"chat_id_default": 111111111,
-"poll_timeout": 25,
-"plugins_dir": "/opt/openwrt-telebot/plugins",
-"log_file": "/var/log/openwrt-telebot.log"
+  "bot_token": "123456789:YOUR_TELEGRAM_BOT_TOKEN",
+  "chat_id_default": 111111111,
+  "poll_timeout": 25,
+  "plugins_dir": "/opt/openwrt-telebot/plugins",
+  "log_file": "/var/log/openwrt-telebot.log",
+  "ui_api_token": "changeme",
+  "ui_base_url": "/telebot",
+  "client_state_file": "/opt/openwrt-telebot/state/clients.json",
+  "nft_table": "telebot",
+  "nft_chain": "client_guard",
+  "nft_block_set": "blocked_clients",
+  "nft_allow_set": "approved_clients",
+  "client_whitelist": []
 }
