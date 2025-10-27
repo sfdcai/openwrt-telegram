@@ -10,6 +10,9 @@ Examples:
 - `/wifi on` -> `wifi.sh on`
 - `/clients` -> `clients.sh`
 - `/firewall list` -> `firewall.sh list`
+- `/leases` -> `leases.sh`
+- `/net_usage br-lan` -> `net_usage.sh br-lan`
+- `/firewall_rules` -> `firewall_rules.sh`
 - `/reboot` -> `reboot.sh`
 
 Environment variables provided to plugins:

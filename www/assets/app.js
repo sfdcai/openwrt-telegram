@@ -52,6 +52,7 @@
   const STATUS_META = {
     pending: { label: 'Pending', icon: '🟡' },
     approved: { label: 'Approved', icon: '🟢' },
+    paused: { label: 'Paused', icon: '⏸' },
     blocked: { label: 'Blocked', icon: '🔴' },
     whitelist: { label: 'Whitelisted', icon: '⭐' },
   };
@@ -424,7 +425,7 @@
     if (!clients.length) {
       const row = document.createElement('tr');
       const cell = document.createElement('td');
-      cell.colSpan = 6;
+      cell.colSpan = 7;
       cell.className = 'empty';
       cell.textContent = 'No clients discovered yet.';
       row.appendChild(cell);
@@ -434,6 +435,8 @@
     }
     for (const client of clients) {
       const row = document.createElement('tr');
+      const identifier = client.id || client.mac;
+      row.dataset.clientId = identifier;
       row.dataset.mac = client.mac;
 
       const statusCell = document.createElement('td');
@@ -442,6 +445,9 @@
       badge.className = `status-badge status-${client.status || 'unknown'}`;
       badge.textContent = `${statusInfo.icon} ${statusInfo.label}`;
       statusCell.appendChild(badge);
+
+      const idCell = document.createElement('td');
+      idCell.textContent = identifier || '—';
 
       const hostCell = document.createElement('td');
       hostCell.textContent = client.hostname || '—';
@@ -462,12 +468,12 @@
         const button = document.createElement('button');
         button.className = 'btn btn-outline';
         button.dataset.clientAction = action;
-        button.dataset.mac = client.mac;
+        button.dataset.identifier = identifier;
         button.textContent = actionLabel(action);
         actionsCell.appendChild(button);
       }
 
-      row.append(statusCell, hostCell, macCell, ipCell, seenCell, actionsCell);
+      row.append(statusCell, idCell, hostCell, macCell, ipCell, seenCell, actionsCell);
       tbody.appendChild(row);
     }
     renderClientStats(clients);
@@ -476,26 +482,32 @@
   function determineClientActions(status) {
     switch (status) {
       case 'approved':
-        return ['block', 'forget'];
+        return ['pause', 'block', 'whitelist', 'forget'];
+      case 'paused':
+        return ['resume', 'block', 'forget'];
       case 'blocked':
         return ['approve', 'whitelist', 'forget'];
       case 'whitelist':
         return ['block', 'forget'];
       default:
-        return ['approve', 'block', 'whitelist', 'forget'];
+        return ['approve', 'block', 'whitelist', 'pause', 'forget'];
     }
   }
 
   function actionLabel(action) {
     switch (action) {
       case 'approve':
-        return 'Approve';
+        return '✅ Approve';
       case 'block':
-        return 'Block';
+        return '🚫 Block';
+      case 'pause':
+        return '⏸ Pause';
+      case 'resume':
+        return '▶ Resume';
       case 'whitelist':
-        return 'Whitelist';
+        return '⭐ Whitelist';
       case 'forget':
-        return 'Forget';
+        return '🗑 Forget';
       default:
         return action;
     }
@@ -515,14 +527,16 @@
     }
   }
 
-  async function clientAction(action, mac) {
-    if (!mac) return;
+  async function clientAction(action, identifier) {
+    if (!identifier) return;
     try {
-      await apiRequest('client_action', { method: 'POST', body: { action, target: mac } });
+      await apiRequest('client_action', { method: 'POST', body: { action, target: identifier } });
       const messages = {
         approve: 'Client approved',
         block: 'Client blocked',
         whitelist: 'Client whitelisted',
+        pause: 'Client paused',
+        resume: 'Client resumed',
         forget: 'Client removed',
       };
       showToast(messages[action] || `Client ${action} request sent`);
@@ -593,7 +607,7 @@
       const target = event.target.closest('button[data-client-action]');
       if (!target) return;
       event.preventDefault();
-      clientAction(target.dataset.clientAction, target.dataset.mac);
+      clientAction(target.dataset.clientAction, target.dataset.identifier || target.dataset.mac);
     });
   }
 

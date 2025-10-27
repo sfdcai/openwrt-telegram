@@ -342,6 +342,10 @@ def main() -> None:
                 client = router.approve(str(target))
             elif client_action == "block":
                 client = router.block(str(target))
+            elif client_action == "pause":
+                client = router.pause(str(target))
+            elif client_action == "resume":
+                client = router.resume(str(target))
             elif client_action == "whitelist":
                 client = router.whitelist(str(target))
             elif client_action == "forget":

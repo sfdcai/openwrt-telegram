@@ -213,7 +213,7 @@ body {
 .client-table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 640px;
+  min-width: 720px;
 }
 
 .client-table th,
@@ -255,6 +255,10 @@ body {
 
 .status-approved {
   background: #4ade80;
+}
+
+.status-paused {
+  background: #fb923c;
 }
 
 .status-blocked {

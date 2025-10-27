@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import signal
@@ -37,7 +38,9 @@ def load_configuration(path: Path) -> Dict[str, Any]:
     return manager.load()
 
 
-def create_dispatcher(cfg: Dict[str, Any], router: RouterController | None) -> Dispatcher:
+def create_dispatcher(
+    cfg: Dict[str, Any], router: RouterController | None, enhanced_notifications: bool
+) -> Dispatcher:
     plugins_dir = cfg.get("plugins_dir", str(BASE_DIR / "plugins"))
     default_chat = cfg.get("chat_id_default")
     log_file = cfg.get("log_file")
@@ -50,6 +53,7 @@ def create_dispatcher(cfg: Dict[str, Any], router: RouterController | None) -> D
         logger=_logger,
         default_chat=default_chat,
         router=router,
+        enhanced_notifications=enhanced_notifications,
     )
     if default_chat:
         log(f"Dispatcher restricted to chat {default_chat}", log_file)
@@ -78,6 +82,7 @@ def poll_once(
     log_file: str | None,
     router: RouterController | None,
     default_chat: int | None,
+    enhanced_notifications: bool,
 ) -> int | None:
     log(f"Polling updates offset={offset} timeout={poll_timeout}", log_file)
     if router:
@@ -87,7 +92,14 @@ def poll_once(
             log_exception("Client refresh failed", exc, log_file)
         else:
             for client in refresh.get("new_pending", []):
-                notify_new_client(api, router, client, default_chat, log_file)
+                notify_new_client(
+                    api,
+                    router,
+                    client,
+                    default_chat,
+                    log_file,
+                    enhanced_notifications,
+                )
     try:
         updates = api.get_updates(offset=offset, timeout=poll_timeout)
     except Exception as exc:  # pragma: no cover - network/HTTP errors
@@ -143,7 +155,12 @@ def poll_once(
                     f"-> sending to {chat_id} (reply={message_id}) {min(80, len(response))} chars",
                     log_file,
                 )
-                api.send_message(chat_id, response, reply_to_message_id=message_id)
+                api.send_message(
+                    chat_id,
+                    response,
+                    reply_to_message_id=message_id,
+                    parse_mode="HTML" if dispatcher.uses_rich_text else None,
+                )
                 log(f"-> sent to {chat_id}", log_file)
             except Exception as exc:  # pragma: no cover - network/HTTP errors
                 log(f"Failed to send message: {exc}", log_file)
@@ -191,7 +208,9 @@ def run_bot(config_path: Path, once: bool = False) -> None:
         log_exception("Router controller unavailable", exc, log_file)
         router = None
 
-    dispatcher = create_dispatcher(cfg, router)
+    enhanced_notifications = bool(cfg.get("enhanced_notifications"))
+
+    dispatcher = create_dispatcher(cfg, router, enhanced_notifications)
     api = TelegramAPI(token)
 
     try:
@@ -224,6 +243,7 @@ def run_bot(config_path: Path, once: bool = False) -> None:
                 log_file,
                 router,
                 cfg.get("chat_id_default"),
+                enhanced_notifications,
             )
         except AuthenticationError:
             RUNNING = False
@@ -242,31 +262,96 @@ def notify_new_client(
     client: Any,
     chat_id: int | None,
     log_file: str | None,
+    enhanced_notifications: bool,
 ) -> None:
     if not chat_id:
         return
     client_data = client if isinstance(client, dict) else client.to_dict()
     details = router.describe_client(client_data)
+    client_id = client_data.get("id") or client_data.get("mac")
     keyboard = {
         "inline_keyboard": [
             [
-                {"text": "✅ Approve", "callback_data": f"client:approve:{client_data['mac']}",},
-                {"text": "🚫 Block", "callback_data": f"client:block:{client_data['mac']}"},
+                {
+                    "text": "✅ Approve",
+                    "callback_data": f"client:approve:{client_id}",
+                },
+                {
+                    "text": "🚫 Block",
+                    "callback_data": f"client:block:{client_id}",
+                },
             ],
             [
-                {"text": "⭐ Whitelist", "callback_data": f"client:whitelist:{client_data['mac']}"},
+                {
+                    "text": "⭐ Whitelist",
+                    "callback_data": f"client:whitelist:{client_id}",
+                },
             ],
         ]
     }
-    text = (
-        "🆕 New device detected\n"
-        f"{details}\n\n"
-        "Approve, block, or whitelist the device using the buttons below or /approve command."
-    )
+    parse_mode = None
+    if enhanced_notifications:
+        summary = router.summary()
+        counts = summary.get("counts", {})
+        graph = _render_status_graph(counts)
+        name = html.escape(client_data.get("hostname") or "Unknown")
+        mac = html.escape(client_data.get("mac") or "?")
+        ip = html.escape(client_data.get("ip") or "?")
+        identifier = html.escape(str(client_id or "?"))
+        details_lines = [
+            "<b>🆕 New device detected</b>",
+            f"<b>Name:</b> {name}",
+            f"<b>Client ID:</b> {identifier}",
+            f"<b>MAC:</b> {mac}",
+            f"<b>IP:</b> {ip}",
+            f"<b>Status:</b> pending approval",
+        ]
+        if graph:
+            details_lines.append("<b>Current client mix:</b>")
+            details_lines.append(f"<pre>{html.escape(graph)}</pre>")
+        details_lines.append(
+            "Use the buttons below or /approve, /block, /whitelist commands to manage this device."
+        )
+        text = "\n".join(details_lines)
+        parse_mode = "HTML"
+    else:
+        text = (
+            "🆕 New device detected\n"
+            f"{details}\n\n"
+            "Approve, block, or whitelist the device using the buttons below or /approve command."
+        )
     try:
-        api.send_message(chat_id, text, reply_markup=keyboard)
+        api.send_message(chat_id, text, reply_markup=keyboard, parse_mode=parse_mode)
+        if client_id:
+            router.mark_notified(client_id)
     except Exception as exc:  # pragma: no cover
         log(f"Failed to notify new client: {exc}", log_file, level="ERROR")
+
+
+def _render_status_graph(counts: Dict[str, Any]) -> str:
+    total = sum(int(value) for value in counts.values() if isinstance(value, int))
+    if total <= 0:
+        return ""
+    order = [
+        ("pending", "🟡"),
+        ("blocked", "🔴"),
+        ("paused", "⏸"),
+        ("approved", "🟢"),
+        ("whitelist", "⭐"),
+    ]
+    lines: list[str] = []
+    for status, icon in order:
+        value = int(counts.get(status, 0) or 0)
+        if value < 0:
+            value = 0
+        if total:
+            width = max(1, int(round((value / total) * 12))) if value else 0
+        else:
+            width = 0
+        bar = "█" * width if width else ""
+        label = status.capitalize()
+        lines.append(f"{icon} {label:<10} {bar} {value}")
+    return "\n".join(lines)
 
 
 def handle_callback_update(api: TelegramAPI, dispatcher: Dispatcher, callback: dict, log_file: str | None) -> None:
@@ -287,9 +372,18 @@ def handle_callback_update(api: TelegramAPI, dispatcher: Dispatcher, callback: d
     if message_text and chat_id:
         try:
             if message_id:
-                api.edit_message_text(chat_id, message_id, message_text)
+                api.edit_message_text(
+                    chat_id,
+                    message_id,
+                    message_text,
+                    parse_mode="HTML" if dispatcher.uses_rich_text else None,
+                )
             else:
-                api.send_message(chat_id, message_text)
+                api.send_message(
+                    chat_id,
+                    message_text,
+                    parse_mode="HTML" if dispatcher.uses_rich_text else None,
+                )
         except Exception as exc:  # pragma: no cover
             log(f"Failed updating message: {exc}", log_file, level="ERROR")
             try:

@@ -11,5 +11,8 @@
   "nft_chain": "client_guard",
   "nft_block_set": "blocked_clients",
   "nft_allow_set": "approved_clients",
+  "firewall_include_path": "/etc/nftables.d/telebot.nft",
+  "firewall_include_section": "telebot_include",
+  "enhanced_notifications": false,
   "client_whitelist": []
 }

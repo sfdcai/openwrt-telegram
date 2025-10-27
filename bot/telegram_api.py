@@ -22,6 +22,12 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import Any, Dict, Optional
+
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
 from typing import Any, Dict
 
 class TelegramAPI:
@@ -69,6 +75,8 @@ class TelegramAPI:
         text: str,
         reply_to_message_id: int | None = None,
         reply_markup: Dict[str, Any] | str | None = None,
+        parse_mode: str | None = None,
+        disable_web_page_preview: bool | None = None,
     ) -> Dict[str, Any]:
         params: Dict[str, Any] = {"chat_id": chat_id, "text": text}
         if reply_to_message_id:
@@ -78,6 +86,10 @@ class TelegramAPI:
                 params["reply_markup"] = json.dumps(reply_markup, separators=(",", ":"))
             else:
                 params["reply_markup"] = reply_markup
+        if parse_mode:
+            params["parse_mode"] = parse_mode
+        if disable_web_page_preview is not None:
+            params["disable_web_page_preview"] = disable_web_page_preview
         response = self._post("sendMessage", params)
         if not isinstance(response, dict) or not response.get("ok"):
             raise RuntimeError(f"sendMessage failed: {response}")
@@ -89,6 +101,7 @@ class TelegramAPI:
         message_id: int,
         text: str,
         reply_markup: Dict[str, Any] | str | None = None,
+        parse_mode: str | None = None,
     ) -> Dict[str, Any]:
         params: Dict[str, Any] = {"chat_id": chat_id, "message_id": message_id, "text": text}
         if reply_markup:
@@ -96,6 +109,8 @@ class TelegramAPI:
                 params["reply_markup"] = json.dumps(reply_markup, separators=(",", ":"))
             else:
                 params["reply_markup"] = reply_markup
+        if parse_mode:
+            params["parse_mode"] = parse_mode
         response = self._post("editMessageText", params)
         if not isinstance(response, dict) or not response.get("ok"):
             raise RuntimeError(f"editMessageText failed: {response}")

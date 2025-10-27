@@ -23,11 +23,14 @@ class Dispatcher:
         logger: Callable[[str], None],
         default_chat: int | None = None,
         router: Optional[RouterController] = None,
+        enhanced_notifications: bool = False,
     ):
         self.plugins_dir = Path(plugins_dir)
         self.logger = logger
         self.default_chat = int(default_chat) if default_chat is not None else None
         self.router = router
+        self.enhanced = bool(enhanced_notifications)
+        self.uses_rich_text = False
         extra_admin_plugins = os.environ.get("TELEBOT_ADMIN_PLUGINS", "")
         self.admin_only_plugins = {
             name.strip().lower() for name in extra_admin_plugins.split(",") if name.strip()
@@ -48,6 +51,8 @@ class Dispatcher:
             "/block": self._cmd_block,
             "/whitelist": self._cmd_whitelist,
             "/forget": self._cmd_forget,
+            "/pause": self._cmd_pause,
+            "/resume": self._cmd_resume,
             "/diag": self._cmd_diagnostics,
             "/diagnostics": self._cmd_diagnostics,
         }
@@ -66,10 +71,12 @@ class Dispatcher:
             "/whoami - display your identifiers",
             "/clients - list known devices",
             "/router - router guard summary",
-            "/approve <mac|ip> - allow a device",
-            "/block <mac|ip> - block a device",
-            "/whitelist <mac|ip> - always allow a device",
-            "/forget <mac> - remove device from registry",
+            "/approve <id|mac|ip> - allow a device",
+            "/block <id|mac|ip> - block a device",
+            "/pause <id|mac|ip> - temporarily suspend a client",
+            "/resume <id|mac|ip> - restore a paused client",
+            "/whitelist <id|mac|ip> - always allow a device",
+            "/forget <id|mac> - remove device from registry",
             "/diag - run deployment diagnostics",
         ]
         return ["\n".join(available + self._plugin_summary())]
@@ -135,7 +142,11 @@ class Dispatcher:
         clients = self.router.list_clients()
         if not clients:
             return ["No clients have been discovered yet."]
-        lines = ["Known clients:"]
+        if self.enhanced:
+            header = "ID       MAC               Hostname                  IP              Status     Last Seen"
+            lines = ["Known clients:", header, "-" * len(header)]
+        else:
+            lines = ["Known clients:"]
         for client in clients:
             lines.append(self._format_client_line(client))
         return ["\n".join(lines)]
@@ -154,6 +165,10 @@ class Dispatcher:
         if counts:
             pretty = ", ".join(f"{key}={value}" for key, value in counts.items())
             lines.append(f" • Status counts: {pretty}")
+            if self.enhanced:
+                graph = self._render_counts_graph(counts)
+                if graph:
+                    lines.append(" • Distribution:\n" + graph)
         nft = summary.get("nft") or {}
         if nft:
             lines.append(
@@ -168,28 +183,43 @@ class Dispatcher:
         state_path = summary.get("state_file")
         if state_path:
             lines.append(f"State file: {state_path}")
+        firewall = summary.get("firewall") or {}
+        if firewall:
+            include_path = firewall.get("include_path")
+            include_exists = firewall.get("include_exists")
+            label = "present" if include_exists else "missing"
+            lines.append(
+                f" • Firewall include ({firewall.get('include_section')}): {label}"
+                + (f" — {include_path}" if include_path else "")
+            )
         return ["\n".join(lines)]
 
     def _cmd_approve(self, user: int, chat: int, message: int, args: list[str]) -> List[str]:
-        return self._client_action(args, self.router.approve if self.router else None, "Usage: /approve <mac|ip>", "approved")
+        return self._client_action(args, self.router.approve if self.router else None, "Usage: /approve <id|mac|ip>", "approved")
 
     def _cmd_block(self, user: int, chat: int, message: int, args: list[str]) -> List[str]:
-        return self._client_action(args, self.router.block if self.router else None, "Usage: /block <mac|ip>", "blocked")
+        return self._client_action(args, self.router.block if self.router else None, "Usage: /block <id|mac|ip>", "blocked")
 
     def _cmd_whitelist(self, user: int, chat: int, message: int, args: list[str]) -> List[str]:
-        return self._client_action(args, self.router.whitelist if self.router else None, "Usage: /whitelist <mac|ip>", "whitelisted")
+        return self._client_action(args, self.router.whitelist if self.router else None, "Usage: /whitelist <id|mac|ip>", "whitelisted")
+
+    def _cmd_pause(self, user: int, chat: int, message: int, args: list[str]) -> List[str]:
+        return self._client_action(args, self.router.pause if self.router else None, "Usage: /pause <id|mac|ip>", "paused")
+
+    def _cmd_resume(self, user: int, chat: int, message: int, args: list[str]) -> List[str]:
+        return self._client_action(args, self.router.resume if self.router else None, "Usage: /resume <id|mac|ip>", "resumed")
 
     def _cmd_forget(self, user: int, chat: int, message: int, args: list[str]) -> List[str]:
         if not self.router:
             return ["Router controls are disabled."]
         if not args:
-            return ["Usage: /forget <mac>"]
+            return ["Usage: /forget <id|mac>"]
         target = args[0]
         try:
             self.router.forget(target)
             return [f"Removed {target} from registry."]
         except ValueError:
-            return ["Invalid MAC address"]
+            return ["Unknown client identifier"]
         except Exception as exc:
             return [f"Failed to remove: {exc}"]
 
@@ -255,8 +285,8 @@ class Dispatcher:
             parts = data.split(":")
             if len(parts) < 3:
                 return {"ack": "Malformed"}
-            action, mac = parts[1], parts[2]
-            return self._handle_client_callback(action, mac)
+            action, identifier = parts[1], parts[2]
+            return self._handle_client_callback(action, identifier)
         return {"ack": "Unknown action"}
 
     def available_plugins(self) -> list[dict[str, str]]:
@@ -341,23 +371,25 @@ class Dispatcher:
         try:
             client = handler(target)
         except ValueError:
-            return ["Invalid MAC address"]
+            return ["Unknown client identifier"]
         except Exception as exc:  # pragma: no cover
             return [f"Failed to update client: {exc}"]
         return [f"{verb.capitalize()} {router.describe_client(client)}"]
 
-    def _handle_client_callback(self, action: str, mac: str) -> dict[str, str]:
+    def _handle_client_callback(self, action: str, identifier: str) -> dict[str, str]:
         router = self.router
         handlers = {
             "approve": (router.approve if router else None, "✅ Approved"),
             "block": (router.block if router else None, "🚫 Blocked"),
             "whitelist": (router.whitelist if router else None, "⭐ Whitelisted"),
+            "pause": (router.pause if router else None, "⏸ Paused"),
+            "resume": (router.resume if router else None, "🟢 Resumed"),
         }
         handler, prefix = handlers.get(action, (None, ""))
         if handler is None:
             return {"ack": "Unsupported"}
         try:
-            client = handler(mac)
+            client = handler(identifier)
         except ValueError:
             return {"ack": "Invalid"}
         except Exception as exc:  # pragma: no cover
@@ -370,17 +402,43 @@ class Dispatcher:
         ip = client.get("ip") or "?"
         hostname = client.get("hostname") or "(unknown)"
         mac = client.get("mac")
+        identifier = client.get("id")
         seen = client.get("last_seen") or 0
         online = client.get("online")
-        badge = {
+        badge = self._status_badge(status)
+        age = self._format_age(seen)
+        state = "online" if online else f"seen {age} ago"
+        ident = f"#{identifier}" if identifier else "-"
+        mac_display = mac or "?"
+        if self.enhanced:
+            return (
+                f"{badge} {ident:<8} {mac_display:<18} {hostname[:22]:<22} "
+                f"{ip:<15} {status:<9} ({state})"
+            )
+        return f"{badge} {hostname} {ident} {mac_display} {ip} — {status} ({state})"
+
+    @staticmethod
+    def _status_badge(status: str | None) -> str:
+        return {
             "pending": "🟡",
             "approved": "🟢",
             "blocked": "🔴",
+            "paused": "⏸",
             "whitelist": "⭐",
-        }.get(status, "•")
-        age = self._format_age(seen)
-        state = "online" if online else f"seen {age} ago"
-        return f"{badge} {hostname} {mac} {ip} — {status} ({state})"
+        }.get(status or "", "•")
+
+    def _render_counts_graph(self, counts: dict[str, int]) -> str:
+        total = sum(int(value) for value in counts.values())
+        if total <= 0:
+            return ""
+        order = ["pending", "blocked", "paused", "approved", "whitelist"]
+        lines: list[str] = []
+        for status in order:
+            value = int(counts.get(status, 0) or 0)
+            width = max(1, int(round((value / total) * 12))) if value else 0
+            bar = "█" * width if width else ""
+            lines.append(f"   {self._status_badge(status)} {status:<10} {bar} {value}")
+        return "\n".join(lines)
 
     @staticmethod
     def _format_age(timestamp: int) -> str:

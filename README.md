@@ -16,9 +16,13 @@ and helper scripts for integrating with router events and shell plugins.
   downloads the latest ZIP automatically, deploys to `/opt/openwrt-telebot`, and
   refreshes the uhttpd assets so stale UI files disappear.
 - **Event helpers** for DHCP and WAN notifications via Telegram.
-- **Router-aware access control** that watches LAN clients, blocks newcomers in
-  nftables until you approve them, and lets you manage the allow/block lists
-  from Telegram or the web dashboard.
+- **Router-aware access control** that watches LAN clients, assigns each device a
+  stable TeleBot ID, feeds nftables (and the OpenWRT firewall UI) until you
+  approve them, and lets you approve, pause/resume, whitelist or forget devices
+  from Telegram or the web dashboard without repeat nagging.
+- **Optional rich Telegram formatting** with inline approval keyboards, sparkline
+  graphs and emoji badges when you enable `enhanced_notifications` in the
+  configuration.
 
 ## Requirements
 
@@ -96,6 +100,11 @@ Edit `/opt/openwrt-telebot/config/config.json`:
 - `nft_block_set` / `nft_allow_set` – nftables sets holding blocked and
   approved MAC addresses.
 - `client_whitelist` – List of MAC addresses that bypass approval entirely.
+- `firewall_include_path` / `firewall_include_section` – Where the generated
+  nftables include is stored and how it is registered with `uci` so the
+  TeleBot rule appears under **Network → Firewall**.
+- `enhanced_notifications` – Set to `true` to send HTML-formatted Telegram
+  messages with icons, device cards and status graphs.
 
 Use the built-in web UI to manage these fields securely – token values are
 masked when displayed and only updated when explicitly changed. The bot accepts
@@ -107,6 +116,14 @@ token** field and press <kbd>Enter</kbd> or click **Save token**. The UI stores
 the value locally and automatically retries it after unauthorized responses. You
 can also append `?token=YOUR_TOKEN` to the dashboard URL for quick access on new
 devices.
+
+### Enhanced Telegram notifications
+
+The default message style stays text-only for maximum compatibility. If you
+want richer chat updates with emoji badges, HTML formatting, compact status
+graphs and inline keyboards, set `"enhanced_notifications": true` in
+`config.json` and restart the bot. The extra formatting is optional so you can
+disable it at any time without changing how approvals work.
 
 ## Running the bot
 
@@ -130,11 +147,17 @@ The dispatcher responds to the following built-in commands:
 - `/whoami` – echo your Telegram identifiers.
 - `/clients` – show all known clients and their status.
 - `/router` – summarise approval counts and nftables health.
-- `/approve <mac|ip>` – approve a pending or blocked client.
-- `/block <mac|ip>` – block a client.
-- `/whitelist <mac|ip>` – permanently allow a client.
-- `/forget <mac>` – remove a client from the registry.
+- `/approve <id|mac|ip>` – approve a pending or blocked client.
+- `/block <id|mac|ip>` – block a client.
+- `/pause <id|mac|ip>` – temporarily suspend internet access for a device.
+- `/resume <id|mac|ip>` – restore a paused device to the approved list.
+- `/whitelist <id|mac|ip>` – permanently allow a client.
+- `/forget <id|mac>` – remove a client from the registry.
 - `/diag` – run the bundled diagnostics report directly from chat.
+
+Every approved device receives a stable identifier such as `C0007`. Use that ID
+in commands and the inline buttons to avoid typing MAC addresses from your
+phone.
 
 ## Web UI
 
@@ -147,23 +170,36 @@ you to:
 - Send test messages or arbitrary messages to specific chats.
 - Run shell plugins and view their output instantly.
 - Tail recent log entries.
-- Review LAN devices, approve or reject new clients, and maintain a whitelist
-  that is never blocked.
+- Review LAN devices with their TeleBot IDs, pause/resume internet access,
+  approve or reject new clients, and maintain a whitelist that is never blocked.
 
 ### Client approval workflow
 
 - When a new MAC address appears on the LAN it is added to the `blocked`
   nftables set and shown as **Pending** in the dashboard.
-- TeleBot sends a Telegram notification with inline buttons so you can approve,
-  block, or whitelist the device directly from chat.
+- TeleBot sends a Telegram notification with the device hostname, TeleBot ID and
+  inline buttons so you can approve, block, pause or whitelist the device
+  directly from chat. Enable `enhanced_notifications` to add HTML cards and a
+  quick client status graph to that message.
 - The web UI mirrors the same controls and shows live connection/"last seen"
   data pulled from DHCP leases and `ip neigh`.
-- Approving a client removes it from the block list, whitelisting marks it as
-  always allowed, and forgetting a device clears it from the registry.
+- Approving a client removes it from the block list, pausing moves it to a
+  temporary deny set, whitelisting marks it as always allowed, and forgetting a
+  device clears it from the registry. Once you take action the bot remembers the
+  decision and will not alert you about that device again unless you remove it.
 
 All operations are logged to the configured log file, and the CGI/UI layer will
 report errors back to the browser while appending stack traces to the log for
 easy troubleshooting.
+
+### Firewall integration
+
+The router controller now writes an nftables include file (default
+`/etc/nftables.d/telebot.nft`) and registers it through `uci` as
+`firewall.telebot_include`. The include is automatically marked `enabled`,
+applies to `family any`, and the firewall service is reloaded so LuCI displays
+it under **Network → Firewall** immediately. Adjust the path or section name in
+`config.json` if you prefer a different location.
 
 ### Logs and troubleshooting
 
@@ -176,6 +212,9 @@ easy troubleshooting.
   API authentication in one step.
 - Use `/router` to confirm client counts and nftables availability without
   leaving Telegram.
+- `/router` now also reports the firewall include status so you can confirm the
+  rule is visible under **Network → Firewall**, while `scripts/diagnostics.py`
+  prints the include attributes for quick verification.
 
 ### Diagnose issues quickly
 

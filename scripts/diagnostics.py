@@ -49,6 +49,10 @@ def check_paths(cfg: Dict[str, Any]) -> list[str]:
     if plugins_dir:
         pd = Path(plugins_dir)
         checks.append(f"Plugins directory: {pd} ({'present' if pd.exists() else 'missing'})")
+    include_path = cfg.get("firewall_include_path")
+    if include_path:
+        ipath = Path(include_path)
+        checks.append(f"Firewall include: {ipath} ({'present' if ipath.exists() else 'missing'})")
     return checks
 
 
@@ -107,6 +111,39 @@ def check_nft(cfg: Dict[str, Any]) -> list[str]:
         checks.append(f"allow set '{allow_set}': {'ok' if code == 0 else 'missing'}")
         if code != 0:
             checks.append(output)
+    return checks
+
+
+def check_firewall_include(cfg: Dict[str, Any]) -> list[str]:
+    checks: list[str] = []
+    section = cfg.get("firewall_include_section", "telebot_include")
+    include_path = cfg.get("firewall_include_path", "/etc/nftables.d/telebot.nft")
+    uci = shutil.which("uci")
+    if not uci:
+        checks.append("uci binary not available – cannot inspect firewall include")
+        return checks
+    code, output = run_command([uci, "-q", "show", f"firewall.{section}"])
+    if code != 0:
+        checks.append(f"firewall.{section}: missing")
+        if output:
+            checks.append(output)
+        return checks
+    checks.append(f"firewall.{section}: present")
+    attributes = {
+        "path": include_path,
+        "type": "script",
+        "reload": "1",
+        "enabled": "1",
+    }
+    for line in output.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.rsplit(".", 1)[-1]
+        attributes[key] = value
+    for key in ("path", "type", "family", "reload", "enabled"):
+        value = attributes.get(key, "(unset)")
+        checks.append(f"  {key}: {value}")
     return checks
 
 
@@ -189,6 +226,10 @@ def main() -> None:
 
     print("\n== nftables status ==")
     for line in check_nft(cfg):
+        print(line)
+
+    print("\n== Firewall include ==")
+    for line in check_firewall_include(cfg):
         print(line)
 
     print("\n== uhttpd status ==")
