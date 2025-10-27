@@ -27,7 +27,7 @@ and helper scripts for integrating with router events and shell plugins.
 ## Quick install
 
 ```sh
-sh install.sh https://github.com/<your-account>/openwrt-telebot/archive/refs/heads/main.zip
+sh install.sh https://github.com/sfdcai/openwrt-telegram/archive/refs/tags/0.01b.zip
 ```
 
 The installer accepts an optional second argument for the destination directory
