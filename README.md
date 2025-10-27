@@ -93,6 +93,10 @@ Edit `/opt/openwrt-telebot/config/config.json`:
   disable authentication or set a secret string and store it in the browser via
   the UI access panel.
 - `ui_base_url` – Preferred base URL for the UI (informational).
+- `version_endpoint` – URL used by the dashboard to determine the latest
+  available release (defaults to the GitHub Releases API).
+- `version_cache_ttl` – How long, in seconds, the remote version lookup is
+  cached before refreshing.
 - `client_state_file` – JSON file that stores discovered clients and their
   approval status (defaults to `state/clients.json`).
 - `nft_table` / `nft_chain` – nftables objects that TeleBot manages to block
@@ -103,8 +107,10 @@ Edit `/opt/openwrt-telebot/config/config.json`:
 - `firewall_include_path` / `firewall_include_section` – Where the generated
   nftables include is stored and how it is registered with `uci` so the
   TeleBot rule appears under **Network → Firewall**.
-- `enhanced_notifications` – Set to `true` to send HTML-formatted Telegram
-  messages with icons, device cards and status graphs.
+- `enhanced_notifications` – Set to `true` (default) to send HTML-formatted
+  Telegram messages with icons, device cards and status graphs.
+- `notification_schedule` – Optional list of `HH:MM` entries (router local
+  time) that triggers a scheduled status digest in the default chat.
 
 Use the built-in web UI to manage these fields securely – token values are
 masked when displayed and only updated when explicitly changed. The bot accepts
@@ -117,13 +123,24 @@ the value locally and automatically retries it after unauthorized responses. You
 can also append `?token=YOUR_TOKEN` to the dashboard URL for quick access on new
 devices.
 
+Once authenticated, the header displays the installed version, the latest
+release detected online, and a colour-coded badge that highlights when an update
+is available.
+
 ### Enhanced Telegram notifications
 
-The default message style stays text-only for maximum compatibility. If you
-want richer chat updates with emoji badges, HTML formatting, compact status
-graphs and inline keyboards, set `"enhanced_notifications": true` in
-`config.json` and restart the bot. The extra formatting is optional so you can
-disable it at any time without changing how approvals work.
+Enhanced formatting is enabled by default and can be toggled from the web UI.
+When active, the bot renders replies with emoji headers, HTML emphasis, compact
+tables, and inline graphs. Disable the switch (or set
+`"enhanced_notifications": false`) if you prefer plain-text responses for
+maximum compatibility.
+
+### Scheduled digests
+
+Provide a comma-separated list of `HH:MM` slots in the **Scheduled digests**
+field of the UI (or via `notification_schedule` in `config.json`) to receive a
+daily router summary. Each slot fires once per day in the router's timezone and
+delivers the same rich output as `/status` and `/router` combined.
 
 ## Running the bot
 

@@ -6,6 +6,7 @@ import argparse
 import html
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -21,6 +22,7 @@ from telegram_api import TelegramAPI
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG = BASE_DIR / "config" / "config.json"
 RUNNING = True
+SCHEDULE_PATTERN = re.compile(r"^(?P<hour>\d{1,2}):(?P<minute>\d{2})$")
 
 
 class AuthenticationError(RuntimeError):
@@ -72,6 +74,85 @@ def configure_environment(cfg: Dict[str, Any]) -> None:
     config_path = cfg.get("config_path")
     if config_path:
         os.environ["TELEBOT_CONFIG"] = str(config_path)
+
+
+def parse_schedule_entries(raw: Any) -> list[int]:
+    if not raw:
+        return []
+    candidates: list[str] = []
+    if isinstance(raw, str):
+        candidates = [part.strip() for part in raw.replace(";", ",").split(",")]
+    elif isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, str):
+                candidates.extend(part.strip() for part in item.replace(";", ",").split(","))
+            else:
+                candidates.append(str(item))
+    else:
+        candidates = [str(raw)]
+    slots: set[int] = set()
+    entries: list[int] = []
+    for candidate in candidates:
+        if not candidate:
+            continue
+        match = SCHEDULE_PATTERN.match(candidate)
+        if not match:
+            continue
+        try:
+            hour = int(match.group("hour"))
+            minute = int(match.group("minute"))
+        except ValueError:
+            continue
+        hour = min(23, max(0, hour))
+        minute = min(59, max(0, minute))
+        total = hour * 60 + minute
+        if total not in slots:
+            slots.add(total)
+            entries.append(total)
+    return sorted(entries)
+
+
+def format_slot(total: int) -> str:
+    hour, minute = divmod(max(0, total), 60)
+    hour %= 24
+    minute %= 60
+    return f"{hour:02d}:{minute:02d}"
+
+
+def send_scheduled_digest(
+    api: TelegramAPI,
+    dispatcher: Dispatcher,
+    router: RouterController | None,
+    chat_id: int,
+    log_file: str | None,
+) -> bool:
+    sections: list[str] = []
+    try:
+        status_messages = dispatcher._cmd_status(chat_id, chat_id, 0, [])
+        if status_messages:
+            sections.append(status_messages[0])
+        if router:
+            router_messages = dispatcher._cmd_router(chat_id, chat_id, 0, [])
+            if router_messages:
+                sections.append(router_messages[0])
+    except Exception as exc:  # pragma: no cover - defensive
+        log_exception("Failed to compose scheduled digest", exc, log_file)
+        return False
+    message = "\n\n".join(part.strip() for part in sections if part and part.strip())
+    if not message:
+        log("Scheduled digest skipped: empty content", log_file, level="DEBUG")
+        return False
+    try:
+        api.send_message(
+            chat_id,
+            message,
+            parse_mode="HTML" if dispatcher.uses_rich_text else None,
+            disable_web_page_preview=True,
+        )
+        return True
+    except Exception as exc:  # pragma: no cover - network
+        log_exception("Failed to send scheduled digest", exc, log_file)
+        return False
 
 
 def poll_once(
@@ -210,8 +291,44 @@ def run_bot(config_path: Path, once: bool = False) -> None:
 
     enhanced_notifications = bool(cfg.get("enhanced_notifications"))
 
+    schedule_minutes = parse_schedule_entries(cfg.get("notification_schedule"))
+    if schedule_minutes:
+        slots = ", ".join(format_slot(slot) for slot in schedule_minutes)
+        log(f"Scheduled digests configured at {slots}", log_file, level="INFO")
+
     dispatcher = create_dispatcher(cfg, router, enhanced_notifications)
     api = TelegramAPI(token)
+
+    sent_today: set[int] = set()
+    last_day: int | None = None
+
+    def maybe_send_scheduled_notifications() -> None:
+        nonlocal sent_today, last_day
+        if not schedule_minutes:
+            return
+        chat_default = cfg.get("chat_id_default")
+        try:
+            chat_target = int(chat_default)
+        except (TypeError, ValueError):
+            chat_target = None
+        if not chat_target:
+            return
+        now_struct = time.localtime()
+        day_marker = now_struct.tm_yday
+        if last_day != day_marker:
+            sent_today.clear()
+            last_day = day_marker
+        current_minutes = now_struct.tm_hour * 60 + now_struct.tm_min
+        for slot in schedule_minutes:
+            if slot in sent_today or current_minutes < slot:
+                continue
+            sent_today.add(slot)
+            success = send_scheduled_digest(api, dispatcher, router, chat_target, log_file)
+            label = format_slot(slot)
+            if success:
+                log(f"Scheduled digest sent at {label}", log_file)
+            else:
+                log(f"Scheduled digest failed at {label}", log_file, level="WARNING")
 
     try:
         profile = api.get_me()
@@ -251,6 +368,7 @@ def run_bot(config_path: Path, once: bool = False) -> None:
         except Exception as exc:  # pragma: no cover - defensive
             log_exception("Polling iteration failed", exc, log_file)
             time.sleep(5)
+        maybe_send_scheduled_notifications()
         if once:
             break
     log("TeleBot stopped.", log_file)
