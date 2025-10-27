@@ -6,6 +6,23 @@ import urllib.parse
 import urllib.request
 from typing import Any, Dict, Optional
 
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any, Dict, Optional
+
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any, Dict, Optional
+
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any, Dict
 
 class TelegramAPI:
     """Minimal Telegram Bot API client that only relies on the stdlib."""
