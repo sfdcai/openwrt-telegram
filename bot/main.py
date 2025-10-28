@@ -62,6 +62,21 @@ def create_dispatcher(
     return dispatcher
 
 
+def sync_bot_commands(api: TelegramAPI, dispatcher: Dispatcher, log_file: str | None) -> None:
+    try:
+        commands = dispatcher.telegram_commands()
+    except AttributeError:
+        commands = []
+    if not commands:
+        return
+    try:
+        api.set_my_commands(commands)
+    except Exception as exc:  # pragma: no cover - network specific
+        log_exception("Failed to register Telegram commands", exc, log_file)
+    else:
+        log(f"Registered {len(commands)} Telegram commands", log_file)
+
+
 def configure_environment(cfg: Dict[str, Any]) -> None:
     log_file = cfg.get("log_file")
     if log_file:
@@ -360,6 +375,8 @@ def run_bot(config_path: Path, once: bool = False) -> None:
             log(f"Authenticated to Telegram as {username} (id {identifier})", log_file)
         else:
             log("Unexpected response from getMe(); continuing but please verify token", log_file, level="WARNING")
+
+    sync_bot_commands(api, dispatcher, log_file)
 
     log("TeleBot starting…", log_file)
     offset: int | None = None

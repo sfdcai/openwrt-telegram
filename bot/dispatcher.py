@@ -64,32 +64,77 @@ class Dispatcher:
             "/diagnostics": self._cmd_diagnostics,
         }
 
+        self.command_overview = [
+            {"command": "/menu", "description": "Interactive control centre", "icon": "📋"},
+            {"command": "/ping", "description": "Heartbeat check", "icon": "🏓"},
+            {"command": "/status", "description": "System snapshot", "icon": "📊"},
+            {"command": "/plugins", "description": "List installed shell helpers", "icon": "🧩"},
+            {
+                "command": "/run",
+                "description": "Execute a plugin",
+                "icon": "▶️",
+                "usage": "/run <plugin> [args]",
+            },
+            {
+                "command": "/log",
+                "description": "Tail the bot log",
+                "icon": "🪵",
+                "usage": "/log [lines]",
+            },
+            {"command": "/whoami", "description": "Show your identifiers", "icon": "🪪"},
+            {"command": "/clients", "description": "Known devices", "icon": "🧑‍💻"},
+            {"command": "/router", "description": "Router guard summary", "icon": "🛡️"},
+            {
+                "command": "/approve",
+                "description": "Approve a device",
+                "icon": "✅",
+                "usage": "/approve <id|mac|ip>",
+            },
+            {
+                "command": "/block",
+                "description": "Block WAN-only or full network",
+                "icon": "🚫",
+                "usage": "/block <id|mac|ip> [internet|network]",
+            },
+            {
+                "command": "/pause",
+                "description": "Temporarily suspend a client",
+                "icon": "⏸",
+                "usage": "/pause <id|mac|ip>",
+            },
+            {
+                "command": "/resume",
+                "description": "Resume a paused client",
+                "icon": "▶️",
+                "usage": "/resume <id|mac|ip>",
+            },
+            {
+                "command": "/whitelist",
+                "description": "Always allow a device",
+                "icon": "⭐",
+                "usage": "/whitelist <id|mac|ip>",
+            },
+            {
+                "command": "/forget",
+                "description": "Remove device from registry",
+                "icon": "🧹",
+                "usage": "/forget <id|mac>",
+            },
+            {"command": "/diag", "description": "Deployment diagnostics", "icon": "🩺", "usage": "/diag"},
+        ]
+
     # ------------------------------------------------------------------
     # Command handlers
 
     def _cmd_help(self, user: int, chat: int, message: int, args: list[str]) -> List[str]:
+        commands = self.command_overview
         if self.enhanced:
-            commands = [
-                ("📋", "/menu", "Interactive control centre"),
-                ("🏓", "/ping", "Heartbeat check"),
-                ("📊", "/status", "System snapshot"),
-                ("🧩", "/plugins", "List installed shell helpers"),
-                ("▶️", "/run &lt;plugin&gt; [args]", "Execute a plugin"),
-                ("🪵", "/log [lines]", "Tail the bot log"),
-                ("🪪", "/whoami", "Show your identifiers"),
-                ("🧑‍💻", "/clients", "Known devices"),
-                ("🛡️", "/router", "Router guard summary"),
-                ("✅", "/approve &lt;id|mac|ip&gt;", "Allow a device"),
-                ("🚫", "/block &lt;id|mac|ip&gt;", "Block a device"),
-                ("⏸", "/pause &lt;id|mac|ip&gt;", "Temporarily suspend"),
-                ("▶️", "/resume &lt;id|mac|ip&gt;", "Resume a client"),
-                ("⭐", "/whitelist &lt;id|mac|ip&gt;", "Always allow a device"),
-                ("🧹", "/forget &lt;id|mac&gt;", "Remove from registry"),
-                ("🩺", "/diag", "Deployment diagnostics"),
-            ]
             lines = ["<b>🧭 Command navigator</b>"]
-            for icon, command, description in commands:
-                lines.append(f"{icon} <code>{command}</code> — {html.escape(description)}")
+            for entry in commands:
+                icon = entry.get("icon") or "•"
+                command = entry.get("usage") or entry["command"]
+                description = html.escape(entry.get("description", ""))
+                lines.append(f"{icon} <code>{command}</code> — {description}")
             plugins = self._plugin_summary()
             if plugins:
                 lines.append("")
@@ -98,26 +143,24 @@ class Dispatcher:
                     lines.append(f"• {html.escape(entry.strip())}")
             return ["\n".join(lines)]
 
-        available = [
-            "Commands:",
-            "/menu - interactive control centre",
-            "/ping - simple heartbeat",
-            "/status - system information",
-            "/plugins - list available shell plugins",
-            "/run <plugin> [args] - execute a plugin",
-            "/log [lines] - tail the bot log",
-            "/whoami - display your identifiers",
-            "/clients - list known devices",
-            "/router - router guard summary",
-            "/approve <id|mac|ip> - allow a device",
-            "/block <id|mac|ip> - block a device",
-            "/pause <id|mac|ip> - temporarily suspend a client",
-            "/resume <id|mac|ip> - restore a paused client",
-            "/whitelist <id|mac|ip> - always allow a device",
-            "/forget <id|mac> - remove device from registry",
-            "/diag - run deployment diagnostics",
-        ]
+        available = ["Commands:"]
+        for entry in commands:
+            command = entry.get("usage") or entry["command"]
+            description = entry.get("description", "")
+            available.append(f"{command} - {description}")
         return ["\n".join(available + self._plugin_summary())]
+
+    def telegram_commands(self) -> list[dict[str, str]]:
+        commands: list[dict[str, str]] = []
+        for entry in self.command_overview:
+            if not entry.get("register", True):
+                continue
+            command = entry.get("command", "").lstrip("/")
+            if not command:
+                continue
+            description = entry.get("description", "")[:256]
+            commands.append({"command": command, "description": description})
+        return commands
 
     def _cmd_menu(self, user: int, chat: int, message: int, args: list[str]) -> List[ResponseType]:
         return [self._menu_payload()]
@@ -570,18 +613,30 @@ class Dispatcher:
 
     def _client_available_actions(self, status: str | None) -> List[str]:
         mapping = {
-            "approved": ["pause", "block", "whitelist", "forget"],
-            "paused": ["resume", "block", "forget"],
-            "blocked": ["approve", "whitelist", "forget"],
-            "whitelist": ["block", "forget"],
-            "pending": ["approve", "block", "whitelist", "pause", "forget"],
+            "approved": ["pause", "block_internet", "block_network", "whitelist", "forget"],
+            "paused": ["resume", "block_internet", "block_network", "forget"],
+            "blocked": ["approve", "block_internet", "whitelist", "forget"],
+            "internet_blocked": ["approve", "block_network", "whitelist", "forget"],
+            "whitelist": ["block_internet", "block_network", "forget"],
+            "pending": [
+                "approve",
+                "block_internet",
+                "block_network",
+                "whitelist",
+                "pause",
+                "forget",
+            ],
         }
-        return mapping.get(status or "", ["approve", "block", "whitelist", "pause", "forget"])
+        return mapping.get(
+            status or "",
+            ["approve", "block_internet", "block_network", "whitelist", "pause", "forget"],
+        )
 
     def _status_label(self, status: str | None) -> str:
         return {
             "pending": "pending approval",
             "approved": "approved",
+            "internet_blocked": "internet access blocked",
             "blocked": "blocked",
             "paused": "paused",
             "whitelist": "whitelisted",
@@ -591,11 +646,59 @@ class Dispatcher:
         return {
             "approve": "✅ Approve",
             "block": "🚫 Block",
+            "block_internet": "🌐🚫 Block internet",
+            "block_network": "⛔ Block network",
             "whitelist": "⭐ Whitelist",
             "pause": "⏸ Pause",
             "resume": "▶ Resume",
             "forget": "🗑 Forget",
         }.get(action, action)
+
+    def _block_mode_payload(self, client: Dict[str, Any]) -> MessagePayload | None:
+        identifier = self._client_identifier(client)
+        if not identifier:
+            return None
+        hostname = client.get("hostname") or "Unknown"
+        status = client.get("status")
+        status_label = self._status_label(status)
+        badge = self._status_badge(status)
+        if self.enhanced:
+            text = (
+                "<b>🚫 Block options</b>\n"
+                f"<b>Client:</b> {html.escape(hostname)} <code>{html.escape(str(identifier))}</code>\n"
+                f"<b>Current:</b> {badge} {html.escape(status_label)}\n"
+                "<i>Choose how strictly to block this device.</i>"
+            )
+        else:
+            text = (
+                "Block options\n"
+                f"Client {hostname} ({identifier})\n"
+                f"Current status: {status_label}\n"
+                "Choose whether to block internet only or the entire network."
+            )
+        buttons = [
+            [
+                {
+                    "text": "🌐🚫 Internet only",
+                    "callback_data": f"client:block_internet:{identifier}",
+                },
+                {
+                    "text": "⛔ Full network",
+                    "callback_data": f"client:block_network:{identifier}",
+                },
+            ]
+        ]
+        buttons.append(
+            [
+                {"text": "⬅ Clients", "callback_data": "menu:clients:refresh"},
+                {"text": "⬅ Menu", "callback_data": "menu:root"},
+            ]
+        )
+        return self._make_message(
+            text,
+            reply_markup={"inline_keyboard": buttons},
+            parse_mode="HTML" if self.enhanced else None,
+        )
 
     def _interactive_client_prompt(
         self,
@@ -695,15 +798,58 @@ class Dispatcher:
         )
 
     def _cmd_block(self, user: int, chat: int, message: int, args: list[str]) -> List[ResponseType]:
-        return self._client_action(
-            args,
-            self.router.block if self.router else None,
-            "Usage: /block <id|mac|ip>",
-            "blocked",
-            "block",
-            eligible_statuses={"approved", "paused", "pending", "whitelist"},
-            prompt_title="Select a device to block",
-        )
+        router = self.router
+        if not router:
+            return ["Router controls are disabled in configuration."]
+        usage = "Usage: /block <id|mac|ip> [internet|network]"
+        if not args:
+            prompt = self._interactive_client_prompt(
+                ["block"],
+                "Select a device to block",
+                statuses={"approved", "paused", "pending", "whitelist", "internet_blocked"},
+            )
+            if prompt:
+                return [prompt]
+            return [usage]
+
+        identifier, *mode_args = args
+        if mode_args:
+            mode = mode_args[0].lower()
+            if mode in {"internet", "wan", "internetonly", "wanonly"}:
+                return self._client_action(
+                    [identifier],
+                    router.block_internet,
+                    usage,
+                    "internet access blocked",
+                    "block_internet",
+                    eligible_statuses={"approved", "paused", "pending", "whitelist", "blocked"},
+                )
+            if mode in {"network", "lan", "all", "full"}:
+                return self._client_action(
+                    [identifier],
+                    router.block,
+                    usage,
+                    "network access blocked",
+                    "block_network",
+                    eligible_statuses={"approved", "paused", "pending", "whitelist", "internet_blocked"},
+                )
+            message_text = f"Unknown block mode: {mode}. Use 'internet' or 'network'."
+            if self.enhanced:
+                return [
+                    self._make_message(
+                        f"<b>🚫 Block</b>\n<i>{html.escape(message_text)}</i>",
+                        parse_mode="HTML",
+                    )
+                ]
+            return [message_text]
+
+        client = self._find_client(identifier)
+        if not client:
+            return ["Unknown client identifier"]
+        payload = self._block_mode_payload(client)
+        if payload:
+            return [payload]
+        return [usage]
 
     def _cmd_whitelist(self, user: int, chat: int, message: int, args: list[str]) -> List[ResponseType]:
         return self._client_action(
@@ -876,13 +1022,18 @@ class Dispatcher:
 
     def _plugin_summary(self) -> list[str]:
         summary: list[str] = []
-        for plugin in self.available_plugins():
+        plugins = self.available_plugins()
+        for index, plugin in enumerate(plugins):
             label = plugin["command"]
             description = plugin.get("description")
             if description:
                 summary.append(f"  {label} — {description}")
             else:
                 summary.append(f"  {label}")
+            if index >= 24 and len(plugins) > 25:
+                remaining = len(plugins) - 25
+                summary.append(f"  … {remaining} more plugin{'s' if remaining != 1 else ''}")
+                break
         return summary
 
     def _client_action(
@@ -918,6 +1069,8 @@ class Dispatcher:
         emoji_map = {
             "approve": "🟢",
             "block": "🚫",
+            "block_internet": "🌐🚫",
+            "block_network": "⛔",
             "pause": "⏸",
             "resume": "▶️",
             "whitelist": "⭐",
@@ -946,9 +1099,21 @@ class Dispatcher:
     def _handle_client_callback(self, action: str, identifier: str) -> dict[str, Any]:
         router = self.router
         forget_handler = (lambda ident: router.forget(ident) or None) if router else None  # type: ignore[arg-type]
+        if action == "block":
+            client = self._find_client(identifier)
+            if not client:
+                return {"ack": "Invalid", "message": "Unknown client."}
+            payload = self._block_mode_payload(client)
+            if not payload:
+                return {"ack": "Unavailable", "message": "Block options unavailable."}
+            return self._format_callback_payload("Block", payload)
         handlers = {
             "approve": (router.approve if router else None, "✅ Approved"),
-            "block": (router.block if router else None, "🚫 Blocked"),
+            "block_internet": (
+                router.block_internet if router else None,
+                "🌐🚫 Internet blocked",
+            ),
+            "block_network": (router.block if router else None, "⛔ Network blocked"),
             "whitelist": (router.whitelist if router else None, "⭐ Whitelisted"),
             "pause": (router.pause if router else None, "⏸ Paused"),
             "resume": (router.resume if router else None, "▶️ Resumed"),
@@ -1016,6 +1181,7 @@ class Dispatcher:
         return {
             "pending": "🟡",
             "approved": "🟢",
+            "internet_blocked": "🛑",
             "blocked": "🔴",
             "paused": "⏸",
             "whitelist": "⭐",
@@ -1025,7 +1191,14 @@ class Dispatcher:
         total = sum(int(value) for value in counts.values())
         if total <= 0:
             return ""
-        order = ["pending", "blocked", "paused", "approved", "whitelist"]
+        order = [
+            "pending",
+            "internet_blocked",
+            "blocked",
+            "paused",
+            "approved",
+            "whitelist",
+        ]
         lines: list[str] = []
         for status in order:
             value = int(counts.get(status, 0) or 0)

@@ -33,6 +33,10 @@
     appDelta: document.querySelector('#app-delta'),
     appBase: document.querySelector('#app-base'),
     statusVersion: document.querySelector('#status-version'),
+    updateButton: document.querySelector('#btn-update'),
+    updateOutput: document.querySelector('#update-output'),
+    updateSummary: document.querySelector('#update-summary'),
+    updateDetails: document.querySelector('#update-details'),
   };
 
   const storedToken = localStorage.getItem(STORAGE_KEY) || '';
@@ -42,6 +46,7 @@
     clients: [],
     retryingToken: false,
     lastTypedToken: '',
+    lastUpdate: null,
   };
 
   const queryToken = new URLSearchParams(window.location.search).get('token');
@@ -55,6 +60,7 @@
   const STATUS_META = {
     pending: { label: 'Pending', icon: '🟡' },
     approved: { label: 'Approved', icon: '🟢' },
+    internet_blocked: { label: 'WAN blocked', icon: '🛑' },
     paused: { label: 'Paused', icon: '⏸' },
     blocked: { label: 'Blocked', icon: '🔴' },
     whitelist: { label: 'Whitelisted', icon: '⭐' },
@@ -202,6 +208,14 @@
     if (ttlField) {
       ttlField.value = config.version_cache_ttl ?? '';
     }
+    const updateTimeout = form.querySelector('#update-timeout');
+    if (updateTimeout) {
+      updateTimeout.value = config.update_timeout ?? '';
+    }
+    const updateZip = form.querySelector('#update-zip-url');
+    if (updateZip) {
+      updateZip.value = config.update_zip_url || '';
+    }
     const enhancedToggle = form.querySelector('#enhanced-notifications');
     if (enhancedToggle) {
       enhancedToggle.checked = Boolean(config.enhanced_notifications);
@@ -221,6 +235,44 @@
     form.querySelector('#nft-chain').value = config.nft_chain || '';
     form.querySelector('#nft-block').value = config.nft_block_set || '';
     form.querySelector('#nft-allow').value = config.nft_allow_set || '';
+    const internetField = form.querySelector('#nft-internet-block');
+    if (internetField) {
+      internetField.value = config.nft_internet_block_set || '';
+    }
+    const nftBinary = form.querySelector('#nft-binary');
+    if (nftBinary) {
+      nftBinary.value = config.nft_binary || '';
+    }
+    const wanField = form.querySelector('#wan-interfaces');
+    if (wanField) {
+      if (Array.isArray(config.wan_interfaces)) {
+        wanField.value = config.wan_interfaces.join(', ');
+      } else if (typeof config.wan_interfaces === 'string') {
+        wanField.value = config.wan_interfaces;
+      } else {
+        wanField.value = '';
+      }
+    }
+    const fwPath = form.querySelector('#firewall-include-path');
+    if (fwPath) {
+      fwPath.value = config.firewall_include_path || '';
+    }
+    const fwSection = form.querySelector('#firewall-include-section');
+    if (fwSection) {
+      fwSection.value = config.firewall_include_section || '';
+    }
+    const leasesPath = form.querySelector('#dhcp-leases-path');
+    if (leasesPath) {
+      leasesPath.value = config.dhcp_leases_path || '';
+    }
+    const ipNeigh = form.querySelector('#ip-neigh-command');
+    if (ipNeigh) {
+      if (Array.isArray(config.ip_neigh_command)) {
+        ipNeigh.value = config.ip_neigh_command.join(' ');
+      } else {
+        ipNeigh.value = config.ip_neigh_command || '';
+      }
+    }
     form.querySelector('#client-whitelist').value = (config.client_whitelist || []).join(', ');
   }
 
@@ -333,6 +385,7 @@
         renderClientStatsFromCounts(data.clients.counts, data.clients.clients || []);
       }
     }
+    renderUpdateState();
   }
 
   async function refreshAll(silent = false) {
@@ -367,6 +420,8 @@
       ui_base_url: elements.configForm.querySelector('#ui-base').value,
       version_endpoint: elements.configForm.querySelector('#version-endpoint').value,
       version_cache_ttl: elements.configForm.querySelector('#version-cache-ttl').value,
+      update_timeout: elements.configForm.querySelector('#update-timeout').value,
+      update_zip_url: elements.configForm.querySelector('#update-zip-url').value,
       enhanced_notifications: elements.configForm.querySelector('#enhanced-notifications').checked,
       notification_schedule: elements.configForm.querySelector('#notification-schedule').value,
       client_state_file: elements.configForm.querySelector('#client-state').value,
@@ -374,6 +429,13 @@
       nft_chain: elements.configForm.querySelector('#nft-chain').value,
       nft_block_set: elements.configForm.querySelector('#nft-block').value,
       nft_allow_set: elements.configForm.querySelector('#nft-allow').value,
+      nft_internet_block_set: elements.configForm.querySelector('#nft-internet-block').value,
+      nft_binary: elements.configForm.querySelector('#nft-binary').value,
+      wan_interfaces: elements.configForm.querySelector('#wan-interfaces').value,
+      firewall_include_path: elements.configForm.querySelector('#firewall-include-path').value,
+      firewall_include_section: elements.configForm.querySelector('#firewall-include-section').value,
+      dhcp_leases_path: elements.configForm.querySelector('#dhcp-leases-path').value,
+      ip_neigh_command: elements.configForm.querySelector('#ip-neigh-command').value,
       client_whitelist: elements.configForm.querySelector('#client-whitelist').value,
     };
     try {
@@ -494,6 +556,32 @@
     return `${Math.floor(delta / 86400)}d ago`;
   }
 
+  function formatTimestamp(value) {
+    const ts = parseInt(value, 10);
+    if (!ts) return 'Unknown';
+    const date = new Date(ts * 1000);
+    if (Number.isNaN(date.getTime())) return 'Unknown';
+    return date.toLocaleString();
+  }
+
+  function renderUpdateState() {
+    if (!elements.updateSummary || !elements.updateOutput) return;
+    const info = state.lastUpdate;
+    if (!info) {
+      elements.updateSummary.textContent = 'No update attempts yet.';
+      elements.updateOutput.textContent = 'Run the installer update to see output here.';
+      if (elements.updateDetails) {
+        elements.updateDetails.open = false;
+      }
+      return;
+    }
+    elements.updateSummary.textContent = info.summary || 'Update status unavailable.';
+    elements.updateOutput.textContent = info.log || '';
+    if (elements.updateDetails) {
+      elements.updateDetails.open = Boolean(info.open);
+    }
+  }
+
   function renderClients(clients = []) {
     state.clients = clients;
     if (!elements.clientRows) return;
@@ -502,7 +590,7 @@
     if (!clients.length) {
       const row = document.createElement('tr');
       const cell = document.createElement('td');
-      cell.colSpan = 7;
+      cell.colSpan = 10;
       cell.className = 'empty';
       cell.textContent = 'No clients discovered yet.';
       row.appendChild(cell);
@@ -515,6 +603,7 @@
       const identifier = client.id || client.mac;
       row.dataset.clientId = identifier;
       row.dataset.mac = client.mac;
+      row.dataset.status = client.status || 'unknown';
 
       const statusCell = document.createElement('td');
       const statusInfo = STATUS_META[client.status] || { label: client.status || 'Unknown', icon: '•' };
@@ -535,8 +624,20 @@
       const ipCell = document.createElement('td');
       ipCell.textContent = client.ip || '—';
 
+      const ifaceCell = document.createElement('td');
+      ifaceCell.textContent = client.interface || '—';
+
+      const onlineCell = document.createElement('td');
+      onlineCell.textContent = client.online ? '🟢 Yes' : '⚪ No';
+      if (!client.online) {
+        onlineCell.title = `Last activity ${formatLastSeen(client)}`;
+      }
+
       const seenCell = document.createElement('td');
-      seenCell.textContent = formatLastSeen(client);
+      seenCell.textContent = formatTimestamp(client.first_seen);
+
+      const lastCell = document.createElement('td');
+      lastCell.textContent = formatLastSeen(client);
 
       const actionsCell = document.createElement('td');
       actionsCell.className = 'actions';
@@ -550,7 +651,18 @@
         actionsCell.appendChild(button);
       }
 
-      row.append(statusCell, idCell, hostCell, macCell, ipCell, seenCell, actionsCell);
+      row.append(
+        statusCell,
+        idCell,
+        hostCell,
+        macCell,
+        ipCell,
+        ifaceCell,
+        onlineCell,
+        seenCell,
+        lastCell,
+        actionsCell,
+      );
       tbody.appendChild(row);
     }
     renderClientStats(clients);
@@ -559,15 +671,17 @@
   function determineClientActions(status) {
     switch (status) {
       case 'approved':
-        return ['pause', 'block', 'whitelist', 'forget'];
+        return ['pause', 'block_internet', 'block_network', 'whitelist', 'forget'];
       case 'paused':
-        return ['resume', 'block', 'forget'];
+        return ['resume', 'block_internet', 'block_network', 'forget'];
       case 'blocked':
-        return ['approve', 'whitelist', 'forget'];
+        return ['approve', 'block_internet', 'whitelist', 'forget'];
+      case 'internet_blocked':
+        return ['approve', 'block_network', 'whitelist', 'forget'];
       case 'whitelist':
-        return ['block', 'forget'];
+        return ['block_internet', 'block_network', 'forget'];
       default:
-        return ['approve', 'block', 'whitelist', 'pause', 'forget'];
+        return ['approve', 'block_internet', 'block_network', 'whitelist', 'pause', 'forget'];
     }
   }
 
@@ -577,6 +691,10 @@
         return '✅ Approve';
       case 'block':
         return '🚫 Block';
+      case 'block_internet':
+        return '🌐🚫 Block internet';
+      case 'block_network':
+        return '⛔ Block network';
       case 'pause':
         return '⏸ Pause';
       case 'resume':
@@ -611,6 +729,8 @@
       const messages = {
         approve: 'Client approved',
         block: 'Client blocked',
+        block_internet: 'Client WAN access blocked',
+        block_network: 'Client fully blocked',
         whitelist: 'Client whitelisted',
         pause: 'Client paused',
         resume: 'Client resumed',
@@ -620,6 +740,54 @@
       await refreshClients(true);
     } catch (error) {
       showToast(error.message || String(error), 'error');
+    }
+  }
+
+  async function performUpdate() {
+    if (!elements.updateButton) return;
+    if (elements.updateButton.dataset.running === '1') {
+      return;
+    }
+    elements.updateButton.dataset.running = '1';
+    const previousLabel = elements.updateButton.textContent;
+    elements.updateButton.textContent = 'Updating…';
+    elements.updateButton.disabled = true;
+    showToast('Downloading latest release…');
+    try {
+      const data = await apiRequest('update', { method: 'POST', body: {} });
+      const finished = new Date();
+      const duration = data.duration ? ` in ${Math.round(Number(data.duration))}s` : '';
+      const version = data.version ? `Installed ${data.version}` : 'Update completed';
+      state.lastUpdate = {
+        summary: `Last update ${finished.toLocaleString()} — ${version}${duration}`,
+        log: data.log || 'Installer completed with no output.',
+        open: true,
+      };
+      renderUpdateState();
+      if (data.restart) {
+        showToast(data.restart, 'info');
+      } else {
+        showToast('Update completed');
+      }
+      await refreshAll(true);
+    } catch (error) {
+      const message = error.message || 'Update failed';
+      state.lastUpdate = {
+        summary: `Last update failed at ${new Date().toLocaleString()} — ${message}`,
+        log:
+          (error.response && error.response.body && error.response.body.error) ||
+          message ||
+          'Update failed',
+        open: true,
+      };
+      renderUpdateState();
+      showToast(message, 'error');
+    } finally {
+      if (elements.updateButton) {
+        elements.updateButton.disabled = false;
+        elements.updateButton.textContent = previousLabel;
+        delete elements.updateButton.dataset.running;
+      }
     }
   }
 
@@ -654,6 +822,12 @@
     });
 
     elements.refresh?.addEventListener('click', () => refreshAll());
+    elements.updateButton?.addEventListener('click', () => {
+      if (!window.confirm('Download and install the latest release from GitHub now?')) {
+        return;
+      }
+      performUpdate();
+    });
     elements.start?.addEventListener('click', () => controlBot('start'));
     elements.stop?.addEventListener('click', () => controlBot('stop'));
     elements.saveConfig?.addEventListener('click', (event) => {
@@ -689,6 +863,7 @@
   }
 
   updateTokenInput();
+  renderUpdateState();
   bindEvents();
   refreshAll(true);
 })();
