@@ -6,6 +6,7 @@ import argparse
 import html
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -21,6 +22,7 @@ from telegram_api import TelegramAPI
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG = BASE_DIR / "config" / "config.json"
 RUNNING = True
+SCHEDULE_PATTERN = re.compile(r"^(?P<hour>\d{1,2}):(?P<minute>\d{2})$")
 
 
 class AuthenticationError(RuntimeError):
@@ -60,6 +62,21 @@ def create_dispatcher(
     return dispatcher
 
 
+def sync_bot_commands(api: TelegramAPI, dispatcher: Dispatcher, log_file: str | None) -> None:
+    try:
+        commands = dispatcher.telegram_commands()
+    except AttributeError:
+        commands = []
+    if not commands:
+        return
+    try:
+        api.set_my_commands(commands)
+    except Exception as exc:  # pragma: no cover - network specific
+        log_exception("Failed to register Telegram commands", exc, log_file)
+    else:
+        log(f"Registered {len(commands)} Telegram commands", log_file)
+
+
 def configure_environment(cfg: Dict[str, Any]) -> None:
     log_file = cfg.get("log_file")
     if log_file:
@@ -72,6 +89,85 @@ def configure_environment(cfg: Dict[str, Any]) -> None:
     config_path = cfg.get("config_path")
     if config_path:
         os.environ["TELEBOT_CONFIG"] = str(config_path)
+
+
+def parse_schedule_entries(raw: Any) -> list[int]:
+    if not raw:
+        return []
+    candidates: list[str] = []
+    if isinstance(raw, str):
+        candidates = [part.strip() for part in raw.replace(";", ",").split(",")]
+    elif isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, str):
+                candidates.extend(part.strip() for part in item.replace(";", ",").split(","))
+            else:
+                candidates.append(str(item))
+    else:
+        candidates = [str(raw)]
+    slots: set[int] = set()
+    entries: list[int] = []
+    for candidate in candidates:
+        if not candidate:
+            continue
+        match = SCHEDULE_PATTERN.match(candidate)
+        if not match:
+            continue
+        try:
+            hour = int(match.group("hour"))
+            minute = int(match.group("minute"))
+        except ValueError:
+            continue
+        hour = min(23, max(0, hour))
+        minute = min(59, max(0, minute))
+        total = hour * 60 + minute
+        if total not in slots:
+            slots.add(total)
+            entries.append(total)
+    return sorted(entries)
+
+
+def format_slot(total: int) -> str:
+    hour, minute = divmod(max(0, total), 60)
+    hour %= 24
+    minute %= 60
+    return f"{hour:02d}:{minute:02d}"
+
+
+def send_scheduled_digest(
+    api: TelegramAPI,
+    dispatcher: Dispatcher,
+    router: RouterController | None,
+    chat_id: int,
+    log_file: str | None,
+) -> bool:
+    sections: list[str] = []
+    try:
+        status_messages = dispatcher._cmd_status(chat_id, chat_id, 0, [])
+        if status_messages:
+            sections.append(status_messages[0])
+        if router:
+            router_messages = dispatcher._cmd_router(chat_id, chat_id, 0, [])
+            if router_messages:
+                sections.append(router_messages[0])
+    except Exception as exc:  # pragma: no cover - defensive
+        log_exception("Failed to compose scheduled digest", exc, log_file)
+        return False
+    message = "\n\n".join(part.strip() for part in sections if part and part.strip())
+    if not message:
+        log("Scheduled digest skipped: empty content", log_file, level="DEBUG")
+        return False
+    try:
+        api.send_message(
+            chat_id,
+            message,
+            parse_mode="HTML" if dispatcher.uses_rich_text else None,
+            disable_web_page_preview=True,
+        )
+        return True
+    except Exception as exc:  # pragma: no cover - network
+        log_exception("Failed to send scheduled digest", exc, log_file)
+        return False
 
 
 def poll_once(
@@ -150,16 +246,33 @@ def poll_once(
         log(f"<- {user_id}@{chat_id}: {text}", log_file)
         responses = dispatcher.handle(user_id, chat_id, message_id or 0, text)
         for response in responses:
+            if isinstance(response, dict):
+                payload = response
+                message_text = str(payload.get("text", ""))
+                reply_markup = payload.get("reply_markup")
+                parse_mode = payload.get("parse_mode")
+                disable_preview = payload.get("disable_web_page_preview")
+            else:
+                message_text = str(response)
+                reply_markup = None
+                parse_mode = None
+                disable_preview = None
+            if parse_mode is None:
+                parse_mode = "HTML" if dispatcher.uses_rich_text else None
+            if not message_text and not reply_markup:
+                continue
             try:
                 log(
-                    f"-> sending to {chat_id} (reply={message_id}) {min(80, len(response))} chars",
+                    f"-> sending to {chat_id} (reply={message_id}) {min(80, len(message_text))} chars",
                     log_file,
                 )
                 api.send_message(
                     chat_id,
-                    response,
+                    message_text,
                     reply_to_message_id=message_id,
-                    parse_mode="HTML" if dispatcher.uses_rich_text else None,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode,
+                    disable_web_page_preview=disable_preview,
                 )
                 log(f"-> sent to {chat_id}", log_file)
             except Exception as exc:  # pragma: no cover - network/HTTP errors
@@ -210,8 +323,44 @@ def run_bot(config_path: Path, once: bool = False) -> None:
 
     enhanced_notifications = bool(cfg.get("enhanced_notifications"))
 
+    schedule_minutes = parse_schedule_entries(cfg.get("notification_schedule"))
+    if schedule_minutes:
+        slots = ", ".join(format_slot(slot) for slot in schedule_minutes)
+        log(f"Scheduled digests configured at {slots}", log_file, level="INFO")
+
     dispatcher = create_dispatcher(cfg, router, enhanced_notifications)
     api = TelegramAPI(token)
+
+    sent_today: set[int] = set()
+    last_day: int | None = None
+
+    def maybe_send_scheduled_notifications() -> None:
+        nonlocal sent_today, last_day
+        if not schedule_minutes:
+            return
+        chat_default = cfg.get("chat_id_default")
+        try:
+            chat_target = int(chat_default)
+        except (TypeError, ValueError):
+            chat_target = None
+        if not chat_target:
+            return
+        now_struct = time.localtime()
+        day_marker = now_struct.tm_yday
+        if last_day != day_marker:
+            sent_today.clear()
+            last_day = day_marker
+        current_minutes = now_struct.tm_hour * 60 + now_struct.tm_min
+        for slot in schedule_minutes:
+            if slot in sent_today or current_minutes < slot:
+                continue
+            sent_today.add(slot)
+            success = send_scheduled_digest(api, dispatcher, router, chat_target, log_file)
+            label = format_slot(slot)
+            if success:
+                log(f"Scheduled digest sent at {label}", log_file)
+            else:
+                log(f"Scheduled digest failed at {label}", log_file, level="WARNING")
 
     try:
         profile = api.get_me()
@@ -226,6 +375,8 @@ def run_bot(config_path: Path, once: bool = False) -> None:
             log(f"Authenticated to Telegram as {username} (id {identifier})", log_file)
         else:
             log("Unexpected response from getMe(); continuing but please verify token", log_file, level="WARNING")
+
+    sync_bot_commands(api, dispatcher, log_file)
 
     log("TeleBot starting…", log_file)
     offset: int | None = None
@@ -251,6 +402,7 @@ def run_bot(config_path: Path, once: bool = False) -> None:
         except Exception as exc:  # pragma: no cover - defensive
             log_exception("Polling iteration failed", exc, log_file)
             time.sleep(5)
+        maybe_send_scheduled_notifications()
         if once:
             break
     log("TeleBot stopped.", log_file)
@@ -310,7 +462,7 @@ def notify_new_client(
             details_lines.append("<b>Current client mix:</b>")
             details_lines.append(f"<pre>{html.escape(graph)}</pre>")
         details_lines.append(
-            "Use the buttons below or /approve, /block, /whitelist commands to manage this device."
+            "Use the buttons below or /menu, /approve, /block, /whitelist commands to manage this device."
         )
         text = "\n".join(details_lines)
         parse_mode = "HTML"
@@ -318,7 +470,7 @@ def notify_new_client(
         text = (
             "🆕 New device detected\n"
             f"{details}\n\n"
-            "Approve, block, or whitelist the device using the buttons below or /approve command."
+            "Approve, block, or whitelist the device using the buttons below or the /menu command."
         )
     try:
         api.send_message(chat_id, text, reply_markup=keyboard, parse_mode=parse_mode)
@@ -369,6 +521,11 @@ def handle_callback_update(api: TelegramAPI, dispatcher: Dispatcher, callback: d
     except Exception as exc:  # pragma: no cover
         log(f"Failed answering callback: {exc}", log_file, level="ERROR")
     message_text = result.get("message")
+    reply_markup = result.get("reply_markup")
+    parse_mode = result.get("parse_mode")
+    if parse_mode is None and dispatcher.uses_rich_text:
+        parse_mode = "HTML"
+    disable_preview = result.get("disable_web_page_preview")
     if message_text and chat_id:
         try:
             if message_id:
@@ -376,18 +533,27 @@ def handle_callback_update(api: TelegramAPI, dispatcher: Dispatcher, callback: d
                     chat_id,
                     message_id,
                     message_text,
-                    parse_mode="HTML" if dispatcher.uses_rich_text else None,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode,
                 )
             else:
                 api.send_message(
                     chat_id,
                     message_text,
-                    parse_mode="HTML" if dispatcher.uses_rich_text else None,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode,
+                    disable_web_page_preview=disable_preview,
                 )
         except Exception as exc:  # pragma: no cover
             log(f"Failed updating message: {exc}", log_file, level="ERROR")
             try:
-                api.send_message(chat_id, message_text)
+                api.send_message(
+                    chat_id,
+                    message_text,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode,
+                    disable_web_page_preview=disable_preview,
+                )
             except Exception:
                 pass
 

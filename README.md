@@ -12,6 +12,9 @@ and helper scripts for integrating with router events and shell plugins.
   directory to expose router functionality as Telegram commands.
 - **Beautiful web UI** hosted from uhttpd for real-time status, configuration
   editing, log inspection, plugin execution and manual chat messaging.
+- **One-click OTA updates** – trigger the bundled installer from the dashboard,
+  watch the log inline, and automatically restart the bot when the deployment
+  succeeds.
 - **Self-healing installer** that works from an extracted release folder or
   downloads the latest ZIP automatically, deploys to `/opt/openwrt-telebot`, and
   refreshes the uhttpd assets so stale UI files disappear.
@@ -23,6 +26,8 @@ and helper scripts for integrating with router events and shell plugins.
 - **Optional rich Telegram formatting** with inline approval keyboards, sparkline
   graphs and emoji badges when you enable `enhanced_notifications` in the
   configuration.
+- **Interactive Telegram menus** that surface a tap-first control centre, client
+  pickers and quick actions so you rarely have to type identifiers by hand.
 
 ## Requirements
 
@@ -93,18 +98,39 @@ Edit `/opt/openwrt-telebot/config/config.json`:
   disable authentication or set a secret string and store it in the browser via
   the UI access panel.
 - `ui_base_url` – Preferred base URL for the UI (informational).
+- `version_endpoint` – URL used by the dashboard to determine the latest
+  available release (defaults to the GitHub Releases API).
+- `version_cache_ttl` – How long, in seconds, the remote version lookup is
+  cached before refreshing.
+- `update_timeout` – Maximum runtime (seconds) for the in-dashboard update
+  button before the installer is aborted (defaults to 600 seconds).
+- `update_zip_url` – Optional override for the release archive URL downloaded
+  during OTA updates (leave empty to use the latest GitHub release).
 - `client_state_file` – JSON file that stores discovered clients and their
   approval status (defaults to `state/clients.json`).
 - `nft_table` / `nft_chain` – nftables objects that TeleBot manages to block
   unapproved MAC addresses on the forward hook.
-- `nft_block_set` / `nft_allow_set` – nftables sets holding blocked and
-  approved MAC addresses.
-- `client_whitelist` – List of MAC addresses that bypass approval entirely.
+- `nft_block_set` / `nft_allow_set` / `nft_internet_block_set` – nftables sets
+  holding fully blocked, approved and WAN-only-blocked MAC addresses.
+- `nft_binary` – Path to the `nft` executable (defaults to `nft`).
+- `nft_family` – nftables family used when creating tables and sets (defaults
+  to `inet`).
+- `wan_interfaces` – Comma-separated list of WAN interface names used when
+  applying WAN-only client blocks.
+  The controller now auto-detects active WAN devices (via `ubus` or
+  `ip route`) and appends them to this list so PPPoE adapters such as
+  `pppoe-wan` are blocked correctly without manual tuning.
 - `firewall_include_path` / `firewall_include_section` – Where the generated
   nftables include is stored and how it is registered with `uci` so the
   TeleBot rule appears under **Network → Firewall**.
-- `enhanced_notifications` – Set to `true` to send HTML-formatted Telegram
-  messages with icons, device cards and status graphs.
+- `client_whitelist` – List of MAC addresses that bypass approval entirely.
+- `dhcp_leases_path` – Primary DHCP lease file used for client discovery.
+- `ip_neigh_command` – Override the `ip neigh` command used to map MAC
+  addresses to interfaces (defaults to `ip neigh show dev br-lan`).
+- `enhanced_notifications` – Set to `true` (default) to send HTML-formatted
+  Telegram messages with icons, device cards and status graphs.
+- `notification_schedule` – Optional list of `HH:MM` entries (router local
+  time) that triggers a scheduled status digest in the default chat.
 
 Use the built-in web UI to manage these fields securely – token values are
 masked when displayed and only updated when explicitly changed. The bot accepts
@@ -117,13 +143,34 @@ the value locally and automatically retries it after unauthorized responses. You
 can also append `?token=YOUR_TOKEN` to the dashboard URL for quick access on new
 devices.
 
+Once authenticated, the header displays the installed version, the latest
+release detected online, and a colour-coded badge that highlights when an update
+is available. Use the **Update** button in the status card to download, extract
+and install the newest release without touching the shell – the UI captures the
+installer log and automatically attempts to restart the init script afterward.
+
+### Enhanced clients table
+
+The **Network clients** table now stretches across the viewport with columns for
+interface, online status, first-seen timestamps and relative activity, making it
+easy to spot devices that are paused, WAN-only blocked, or awaiting approval.
+Inline action buttons remain grouped with each client and adapt based on the
+current status.
+
 ### Enhanced Telegram notifications
 
-The default message style stays text-only for maximum compatibility. If you
-want richer chat updates with emoji badges, HTML formatting, compact status
-graphs and inline keyboards, set `"enhanced_notifications": true` in
-`config.json` and restart the bot. The extra formatting is optional so you can
-disable it at any time without changing how approvals work.
+Enhanced formatting is enabled by default and can be toggled from the web UI.
+When active, the bot renders replies with emoji headers, HTML emphasis, compact
+tables, and inline graphs. Disable the switch (or set
+`"enhanced_notifications": false`) if you prefer plain-text responses for
+maximum compatibility.
+
+### Scheduled digests
+
+Provide a comma-separated list of `HH:MM` slots in the **Scheduled digests**
+field of the UI (or via `notification_schedule` in `config.json`) to receive a
+daily router summary. Each slot fires once per day in the router's timezone and
+delivers the same rich output as `/status` and `/router` combined.
 
 ## Running the bot
 
@@ -139,16 +186,17 @@ in `config.json`.
 
 The dispatcher responds to the following built-in commands:
 
+- `/menu` – open the interactive control centre with status tiles and quick actions.
 - `/ping` – heartbeat check.
 - `/status` – core system information.
 - `/plugins` – list executable shell plugins.
 - `/run <plugin> [args]` – run a plugin (admin-only for critical scripts).
 - `/log [lines]` – tail the bot log.
 - `/whoami` – echo your Telegram identifiers.
-- `/clients` – show all known clients and their status.
+- `/clients` – browse clients with inline navigation and one-tap action buttons.
 - `/router` – summarise approval counts and nftables health.
 - `/approve <id|mac|ip>` – approve a pending or blocked client.
-- `/block <id|mac|ip>` – block a client.
+- `/block <id|mac|ip> [internet|network]` – block WAN-only or the entire network for a client.
 - `/pause <id|mac|ip>` – temporarily suspend internet access for a device.
 - `/resume <id|mac|ip>` – restore a paused device to the approved list.
 - `/whitelist <id|mac|ip>` – permanently allow a client.
@@ -157,7 +205,9 @@ The dispatcher responds to the following built-in commands:
 
 Every approved device receives a stable identifier such as `C0007`. Use that ID
 in commands and the inline buttons to avoid typing MAC addresses from your
-phone.
+phone. Commands like `/approve`, `/block`, `/pause`, `/resume`, `/whitelist` and
+`/forget` now present an inline selector when you omit the identifier so you can
+confirm the target visually before actioning it.
 
 ## Web UI
 
@@ -170,8 +220,9 @@ you to:
 - Send test messages or arbitrary messages to specific chats.
 - Run shell plugins and view their output instantly.
 - Tail recent log entries.
-- Review LAN devices with their TeleBot IDs, pause/resume internet access,
-  approve or reject new clients, and maintain a whitelist that is never blocked.
+- Review LAN devices with their TeleBot IDs, choose WAN-only or full-network
+  blocks, pause/resume internet access, approve or reject new clients, and
+  maintain a whitelist that is never blocked.
 
 ### Client approval workflow
 
@@ -181,6 +232,15 @@ you to:
   inline buttons so you can approve, block, pause or whitelist the device
   directly from chat. Enable `enhanced_notifications` to add HTML cards and a
   quick client status graph to that message.
+- Use `/clients` or `/menu → Clients` to browse pending devices with paginated
+  inline buttons. The same selector appears when you run `/approve`, `/block`,
+  `/pause`, `/resume`, `/whitelist` or `/forget` without arguments so you can
+  confirm the target before applying a change.
+- `/block` now presents two buttons: **🌐🚫 Block internet** limits WAN access by
+  dropping packets headed to the configured WAN interfaces while keeping LAN
+  reachability intact, and **⛔ Block network** isolates the device entirely.
+  Configure the WAN interface list under **WAN interfaces** in the web UI to
+  suit your topology (e.g. `wan, wan6, pppoe-wan`).
 - The web UI mirrors the same controls and shows live connection/"last seen"
   data pulled from DHCP leases and `ip neigh`.
 - Approving a client removes it from the block list, pausing moves it to a
@@ -210,6 +270,18 @@ it under **Network → Firewall** immediately. Adjust the path or section name i
 - Run the diagnostics helper either from SSH (`python3 scripts/diagnostics.py`)
   or Telegram (`/diag`) to validate services, nftables, web UI deployment and
   API authentication in one step.
+
+### Recommended enhancements
+
+- **UCI-driven profiles:** map TeleBot roles to OpenWrt UCI sections so specific
+  WLANs, DHCP pools or VPN instances can be toggled per profile directly from
+  Telegram, keeping configuration drift minimal.
+- **Per-device history export:** persist recent activity snapshots (approval
+  changes, WAN/LAN transitions, alerts triggered) so operators can download a
+  CSV audit trail from the web UI.
+- **Service health hooks:** integrate with lightweight monitoring (e.g. `ubus`
+  stats) to auto-restart WAN, DNS or AdGuard services when TeleBot notices
+  repeated failures, with backoff and chat notifications.
 - Use `/router` to confirm client counts and nftables availability without
   leaving Telegram.
 - `/router` now also reports the firewall include status so you can confirm the

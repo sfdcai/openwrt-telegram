@@ -71,6 +71,7 @@ class RouterController:
     STATUS_PENDING = "pending"
     STATUS_APPROVED = "approved"
     STATUS_BLOCKED = "blocked"
+    STATUS_BLOCKED_INTERNET = "internet_blocked"
     STATUS_PAUSED = "paused"
     STATUS_WHITELIST = "whitelist"
 
@@ -84,10 +85,30 @@ class RouterController:
         self.state_path = Path(cfg.get("client_state_file") or (base_dir / "state" / "clients.json"))
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self.nft_binary = cfg.get("nft_binary", "nft")
+        self.nft_family = (cfg.get("nft_family") or "inet").strip() or "inet"
         self.nft_table = cfg.get("nft_table", "telebot")
         self.nft_chain = cfg.get("nft_chain", "client_guard")
         self.nft_block_set = cfg.get("nft_block_set", "blocked_clients")
         self.nft_allow_set = cfg.get("nft_allow_set", "approved_clients")
+        self.nft_internet_block_set = cfg.get("nft_internet_block_set", "internet_block_clients")
+        wan_cfg = cfg.get("wan_interfaces") or []
+        if isinstance(wan_cfg, str):
+            wan_candidates = [part.strip() for part in wan_cfg.replace(";", ",").split(",")]
+        else:
+            wan_candidates = [str(item).strip() for item in wan_cfg if str(item).strip()]
+        self.wan_interfaces: list[str] = [iface for iface in wan_candidates if iface]
+        detected_wan = self._detect_wan_interfaces()
+        for iface in detected_wan:
+            if iface and iface not in self.wan_interfaces:
+                self.wan_interfaces.append(iface)
+        if self.wan_interfaces:
+            self.wan_interfaces = sorted(dict.fromkeys(self.wan_interfaces))
+        if detected_wan:
+            self._logger(
+                "Detected WAN interfaces: " + ", ".join(sorted(detected_wan)),
+                self.log_file,
+                "DEBUG",
+            )
         self.whitelist = {_normalize_mac(mac) for mac in cfg.get("client_whitelist", []) if _normalize_mac(mac)}
         self.state: Dict[str, Any] = {"clients": {}}
         self._nft_ready = False
@@ -156,6 +177,58 @@ class RouterController:
         seq = int(self.state.get("sequence", 999)) + 1
         self.state["sequence"] = seq
         return f"C{seq:04d}"
+
+    def _detect_wan_interfaces(self) -> list[str]:
+        interfaces: list[str] = []
+        ubus = shutil.which("ubus")
+        if ubus:
+            for logical in ("wan", "wan6"):
+                try:
+                    output = subprocess.check_output(
+                        [ubus, "call", f"network.interface.{logical}", "status"],
+                        stderr=subprocess.DEVNULL,
+                        timeout=5,
+                    )
+                except subprocess.CalledProcessError:
+                    continue
+                except Exception as exc:  # pragma: no cover - best effort
+                    self._logger(
+                        f"Failed to query ubus for {logical}: {exc}",
+                        self.log_file,
+                        "DEBUG",
+                    )
+                    continue
+                try:
+                    data = json.loads(output.decode("utf-8"))
+                except Exception:
+                    continue
+                for key in ("device", "l3_device", "ifname"):
+                    value = data.get(key)
+                    if isinstance(value, str) and value:
+                        interfaces.append(value.strip())
+        if not interfaces:
+            ip_cmd = shutil.which("ip")
+            if ip_cmd:
+                try:
+                    output = subprocess.check_output(
+                        [ip_cmd, "-o", "route", "show", "default"],
+                        stderr=subprocess.DEVNULL,
+                        timeout=5,
+                    )
+                    for line in output.decode("utf-8").splitlines():
+                        parts = line.split()
+                        if "dev" in parts:
+                            idx = parts.index("dev")
+                            if idx + 1 < len(parts):
+                                interfaces.append(parts[idx + 1])
+                except Exception:
+                    pass
+        normalised = []
+        for iface in interfaces:
+            iface_clean = iface.strip()
+            if iface_clean and iface_clean not in normalised:
+                normalised.append(iface_clean)
+        return normalised
 
     # ------------------------------------------------------------------
     # Discovery
@@ -333,13 +406,13 @@ class RouterController:
             return
         try:
             subprocess.run(
-                [self.nft_binary, "list", "table", "inet", self.nft_table],
+                [self.nft_binary, "list", "table", self.nft_family, self.nft_table],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=False,
             )
             subprocess.run(
-                [self.nft_binary, "add", "table", "inet", self.nft_table],
+                [self.nft_binary, "add", "table", self.nft_family, self.nft_table],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=False,
@@ -347,6 +420,8 @@ class RouterController:
 
             self._ensure_set(self.nft_block_set)
             self._ensure_set(self.nft_allow_set)
+            if self.nft_internet_block_set:
+                self._ensure_set(self.nft_internet_block_set)
             self._ensure_chain()
             self._ensure_drop_rule()
             self._ensure_firewall_include()
@@ -359,38 +434,62 @@ class RouterController:
             self._logger(f"Failed to initialise nftables: {exc}", self.log_file, "ERROR")
 
     def _ensure_set(self, name: str) -> None:
-        script = f"add set inet {self.nft_table} {name} {{ type etheraddr; size 65535; }}"
+        script = (
+            f"add set {self.nft_family} {self.nft_table} {name} "
+            "{ type etheraddr; size 65535; }"
+        )
         self._run_nft(script)
 
     def _ensure_chain(self) -> None:
         script = (
-            f"add chain inet {self.nft_table} {self.nft_chain} "
-            "{ type filter hook forward priority 0; policy accept; }"
+            f"add chain {self.nft_family} {self.nft_table} {self.nft_chain} "
+            "{ type filter hook forward priority -150; policy accept; }"
         )
         self._run_nft(script)
 
     def _ensure_drop_rule(self) -> None:
-        script = (
-            f"add rule inet {self.nft_table} {self.nft_chain} "
-            f"ether saddr @${self.nft_block_set} drop"
-        )
-        self._run_nft(script)
+        if self.nft_block_set:
+            script = (
+                f"add rule {self.nft_family} {self.nft_table} {self.nft_chain} "
+                f"ether saddr @${self.nft_block_set} drop"
+            )
+            self._run_nft(script)
+        if self.nft_internet_block_set and self.wan_interfaces:
+            iface_list = ", ".join(f'"{iface}"' for iface in self.wan_interfaces)
+            script = (
+                f"add rule {self.nft_family} {self.nft_table} {self.nft_chain} "
+                f"ether saddr @${self.nft_internet_block_set} oifname {{ {iface_list} }} drop"
+            )
+            self._run_nft(script)
 
     def _ensure_firewall_include(self) -> None:
         include_path = self.firewall_include_path
         try:
             include_path.parent.mkdir(parents=True, exist_ok=True)
-            content = (
-                "# Autogenerated by openwrt-telegram RouterController\n"
-                f"table inet {self.nft_table} {{\n"
-                f"    set {self.nft_block_set} {{ type etheraddr; flags interval; }}\n"
-                f"    set {self.nft_allow_set} {{ type etheraddr; flags interval; }}\n"
-                f"    chain {self.nft_chain} {{\n"
-                "        type filter hook forward priority 0; policy accept;\n"
-                f"        ether saddr @{self.nft_block_set} drop\n"
-                "    }\n"
-                "}\n"
+            lines = [
+                "# Autogenerated by openwrt-telegram RouterController",
+                f"table {self.nft_family} {self.nft_table} {{",
+                f"    set {self.nft_block_set} {{ type etheraddr; flags interval; }}",
+                f"    set {self.nft_allow_set} {{ type etheraddr; flags interval; }}",
+            ]
+            if self.nft_internet_block_set:
+                lines.append(
+                    f"    set {self.nft_internet_block_set} {{ type etheraddr; flags interval; }}"
+                )
+            lines.extend(
+                [
+                    f"    chain {self.nft_chain} {{",
+                    "        type filter hook forward priority -150; policy accept;",
+                    f"        ether saddr @{self.nft_block_set} drop",
+                ]
             )
+            if self.nft_internet_block_set and self.wan_interfaces:
+                iface_list = ", ".join(f'\"{iface}\"' for iface in self.wan_interfaces)
+                lines.append(
+                    f"        ether saddr @{self.nft_internet_block_set} oifname {{ {iface_list} }} drop"
+                )
+            lines.extend(["    }", "}"])
+            content = "\n".join(lines) + "\n"
             current = None
             if include_path.exists():
                 current = include_path.read_text(encoding="utf-8")
@@ -465,13 +564,23 @@ class RouterController:
         if not self._nft_supported:
             return
         try:
-            subprocess.run(
+            result = subprocess.run(
                 [self.nft_binary, "-f", "-"],
                 input=(script + "\n").encode("utf-8"),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 check=False,
             )
+            if result.returncode != 0:
+                stderr = result.stderr.decode("utf-8", errors="ignore").strip()
+                stdout = result.stdout.decode("utf-8", errors="ignore").strip()
+                details = stderr or stdout or f"exit {result.returncode}"
+                snippet = script.replace("\n", " ")[:160]
+                self._logger(
+                    f"nft command failed ({details}): {snippet}",
+                    self.log_file,
+                    "WARNING",
+                )
         except Exception as exc:  # pragma: no cover
             self._logger(f"nft command failed: {exc}", self.log_file, "ERROR")
 
@@ -503,27 +612,42 @@ class RouterController:
             return
         if status == self.STATUS_WHITELIST:
             self._nft_remove(self.nft_block_set, mac)
+            self._nft_remove(self.nft_internet_block_set, mac)
+            self._nft_add(self.nft_allow_set, mac)
             return
         if status == self.STATUS_APPROVED:
             self._nft_remove(self.nft_block_set, mac)
+            self._nft_remove(self.nft_internet_block_set, mac)
             self._nft_add(self.nft_allow_set, mac)
+            return
+        if status == self.STATUS_BLOCKED_INTERNET:
+            self._nft_remove(self.nft_block_set, mac)
+            self._nft_add(self.nft_internet_block_set, mac)
+            self._nft_remove(self.nft_allow_set, mac)
             return
         if status in {self.STATUS_PENDING, self.STATUS_BLOCKED, self.STATUS_PAUSED}:
             self._nft_add(self.nft_block_set, mac)
+            if self.nft_internet_block_set:
+                self._nft_remove(self.nft_internet_block_set, mac)
             self._nft_remove(self.nft_allow_set, mac)
+            return
+        self._nft_remove(self.nft_block_set, mac)
+        if self.nft_internet_block_set:
+            self._nft_remove(self.nft_internet_block_set, mac)
+        self._nft_remove(self.nft_allow_set, mac)
 
     def _nft_add(self, set_name: str, mac: str) -> None:
         if not set_name:
             return
         self.ensure_nft()
-        script = f"add element inet {self.nft_table} {set_name} {{ {mac} }}"
+        script = f"add element {self.nft_family} {self.nft_table} {set_name} {{ {mac} }}"
         self._run_nft(script)
 
     def _nft_remove(self, set_name: str, mac: str) -> None:
         if not set_name:
             return
         self.ensure_nft()
-        script = f"delete element inet {self.nft_table} {set_name} {{ {mac} }}"
+        script = f"delete element {self.nft_family} {self.nft_table} {set_name} {{ {mac} }}"
         self._run_nft(script)
 
     def _nft_resource_exists(self, kind: str, name: str | None = None) -> bool:
@@ -532,11 +656,11 @@ class RouterController:
         if kind == "table":
             if not self.nft_table:
                 return False
-            command = [self.nft_binary, "list", "table", "inet", self.nft_table]
+            command = [self.nft_binary, "list", "table", self.nft_family, self.nft_table]
         elif kind == "set":
             if not self.nft_table or not name:
                 return False
-            command = [self.nft_binary, "list", "set", "inet", self.nft_table, name]
+            command = [self.nft_binary, "list", "set", self.nft_family, self.nft_table, name]
         else:
             return False
         try:
@@ -577,14 +701,21 @@ class RouterController:
         nft_status = {
             "supported": self._nft_supported,
             "ready": self._nft_ready,
+            "family": self.nft_family,
             "table_exists": self._nft_resource_exists("table"),
             "block_set_exists": self._nft_resource_exists("set", self.nft_block_set),
             "allow_set_exists": self._nft_resource_exists("set", self.nft_allow_set),
+            "internet_block_set_exists": (
+                self._nft_resource_exists("set", self.nft_internet_block_set)
+                if self.nft_internet_block_set
+                else False
+            ),
         }
         firewall = {
             "include_path": str(self.firewall_include_path),
             "include_exists": self.firewall_include_path.exists(),
             "include_section": self.firewall_include_section,
+            "wan_interfaces": list(self.wan_interfaces),
         }
         return {
             "total_clients": len(clients),
@@ -617,6 +748,7 @@ class RouterController:
             self.STATUS_PENDING,
             self.STATUS_APPROVED,
             self.STATUS_BLOCKED,
+            self.STATUS_BLOCKED_INTERNET,
             self.STATUS_PAUSED,
             self.STATUS_WHITELIST,
         }:
@@ -644,6 +776,13 @@ class RouterController:
         self._logger(f"Client {client['mac']} blocked", self.log_file, "WARNING")
         return client
 
+    def block_internet(self, mac: str) -> Dict[str, Any]:
+        client = self.set_status(mac, self.STATUS_BLOCKED_INTERNET)
+        self._logger(
+            f"Client {client['mac']} blocked from WAN", self.log_file, "WARNING"
+        )
+        return client
+
     def pause(self, mac: str) -> Dict[str, Any]:
         client = self.set_status(mac, self.STATUS_PAUSED)
         self._logger(f"Client {client['mac']} paused", self.log_file, "INFO")
@@ -667,6 +806,8 @@ class RouterController:
         if mac_normalized in clients:
             del clients[mac_normalized]
             self._nft_remove(self.nft_block_set, mac_normalized)
+            if self.nft_internet_block_set:
+                self._nft_remove(self.nft_internet_block_set, mac_normalized)
             self._nft_remove(self.nft_allow_set, mac_normalized)
             self._save_state()
             self._logger(f"Client {mac_normalized} removed from registry", self.log_file, "INFO")
@@ -697,6 +838,7 @@ class RouterController:
             self.STATUS_PENDING: "pending approval",
             self.STATUS_APPROVED: "approved",
             self.STATUS_BLOCKED: "blocked",
+            self.STATUS_BLOCKED_INTERNET: "internet access blocked",
             self.STATUS_PAUSED: "paused",
             self.STATUS_WHITELIST: "whitelisted",
         }.get(status, status or "unknown")
@@ -712,6 +854,7 @@ class RouterController:
         order = {
             self.STATUS_PENDING: 0,
             self.STATUS_BLOCKED: 1,
+            self.STATUS_BLOCKED_INTERNET: 1,
             self.STATUS_PAUSED: 1,
             self.STATUS_APPROVED: 2,
             self.STATUS_WHITELIST: 3,

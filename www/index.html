@@ -13,7 +13,9 @@
         <h1>OpenWRT TeleBot</h1>
         <p>Manage your Telegram automation bot directly from your router.</p>
         <p class="hero__meta">
-          <span id="app-version" class="hero__badge">Version —</span>
+          <span id="app-version" class="hero__badge hero__badge--muted">Installed —</span>
+          <span id="app-remote" class="hero__badge hero__badge--muted">Online —</span>
+          <span id="app-delta" class="hero__badge hero__badge--status hero__badge--idle">Checking…</span>
           <span id="app-base" class="hero__path"></span>
         </p>
       </div>
@@ -39,6 +41,7 @@
           <h2>Bot status</h2>
           <div class="card__actions">
             <button id="btn-refresh" class="btn btn-icon" title="Refresh status">⟳</button>
+            <button id="btn-update" class="btn btn-warning" title="Download and install the latest release">Update</button>
             <button id="btn-start" class="btn btn-success">Start</button>
             <button id="btn-stop" class="btn btn-danger">Stop</button>
           </div>
@@ -52,8 +55,16 @@
             <strong>Last update</strong>
             <p id="status-updated">—</p>
           </div>
+          <div>
+            <strong>Version status</strong>
+            <p id="status-version">—</p>
+          </div>
         </div>
         <pre id="system-info" class="code-block">Waiting for data…</pre>
+        <details id="update-details" class="update-details">
+          <summary id="update-summary">No update attempts yet.</summary>
+          <pre id="update-output" class="code-block code-block--update">Run the installer update to see output here.</pre>
+        </details>
       </section>
 
       <section class="card" id="config-card">
@@ -86,11 +97,47 @@
           <label for="ui-base">UI base URL</label>
           <input id="ui-base" name="ui_base_url" type="text" placeholder="/telebot" />
 
+          <label for="version-endpoint">Remote version endpoint</label>
+          <input
+            id="version-endpoint"
+            name="version_endpoint"
+            type="url"
+            placeholder="https://api.github.com/repos/sfdcai/openwrt-telegram/releases/latest"
+          />
+
+          <div class="form-toggle">
+            <input id="enhanced-notifications" name="enhanced_notifications" type="checkbox" />
+            <label for="enhanced-notifications">Enhanced Telegram formatting</label>
+            <p class="form-hint">Adds emoji-rich HTML replies and inline summaries.</p>
+          </div>
+
+          <label for="notification-schedule">Scheduled digests (HH:MM, comma separated)</label>
+          <input
+            id="notification-schedule"
+            name="notification_schedule"
+            type="text"
+            placeholder="07:30, 19:00"
+          />
+          <p class="form-hint">Times use the router’s local timezone. Leave blank to disable.</p>
+
+          <label for="version-cache-ttl">Version cache TTL (seconds)</label>
+          <input id="version-cache-ttl" name="version_cache_ttl" type="number" min="60" step="60" />
+
+          <label for="update-timeout">Update timeout (seconds)</label>
+          <input id="update-timeout" name="update_timeout" type="number" min="120" step="30" />
+
+          <label for="update-zip-url">Override update ZIP URL</label>
+          <input id="update-zip-url" name="update_zip_url" type="url" placeholder="https://example.com/custom.zip" />
+          <p class="form-hint">Optional; leave blank to use the latest GitHub release asset.</p>
+
           <label for="client-state">Client registry file</label>
           <input id="client-state" name="client_state_file" type="text" placeholder="/opt/openwrt-telebot/state/clients.json" />
 
           <label for="nft-table">nftables table</label>
           <input id="nft-table" name="nft_table" type="text" placeholder="telebot" />
+
+          <label for="nft-family">nftables family</label>
+          <input id="nft-family" name="nft_family" type="text" placeholder="inet" />
 
           <label for="nft-chain">nftables chain</label>
           <input id="nft-chain" name="nft_chain" type="text" placeholder="client_guard" />
@@ -101,8 +148,45 @@
           <label for="nft-allow">Approved set name</label>
           <input id="nft-allow" name="nft_allow_set" type="text" placeholder="approved_clients" />
 
+          <label for="nft-internet-block">WAN-only block set</label>
+          <input
+            id="nft-internet-block"
+            name="nft_internet_block_set"
+            type="text"
+            placeholder="internet_block_clients"
+          />
+
+          <label for="nft-binary">nft binary path</label>
+          <input id="nft-binary" name="nft_binary" type="text" placeholder="nft" />
+
+          <label for="wan-interfaces">WAN interfaces (comma separated)</label>
+          <input id="wan-interfaces" name="wan_interfaces" type="text" placeholder="wan, wan6" />
+          <p class="form-hint">Used to drop traffic only when forwarding towards these interfaces.</p>
+
+          <label for="firewall-include-path">Firewall include path</label>
+          <input id="firewall-include-path" name="firewall_include_path" type="text" placeholder="/etc/nftables.d/telebot.nft" />
+
+          <label for="firewall-include-section">Firewall include section</label>
+          <input id="firewall-include-section" name="firewall_include_section" type="text" placeholder="telebot_include" />
+
+          <label for="dhcp-leases-path">DHCP leases file</label>
+          <input id="dhcp-leases-path" name="dhcp_leases_path" type="text" placeholder="/tmp/dhcp.leases" />
+
+          <label for="ip-neigh-command">ip neigh command</label>
+          <input
+            id="ip-neigh-command"
+            name="ip_neigh_command"
+            type="text"
+            placeholder="ip neigh show dev br-lan"
+          />
+
           <label for="client-whitelist">Whitelisted MACs (comma separated)</label>
-          <textarea id="client-whitelist" name="client_whitelist" rows="2" placeholder="aa:bb:cc:dd:ee:ff,11:22:33:44:55:66"></textarea>
+          <textarea
+            id="client-whitelist"
+            name="client_whitelist"
+            rows="2"
+            placeholder="aa:bb:cc:dd:ee:ff,11:22:33:44:55:66"
+          ></textarea>
         </form>
       </section>
 
@@ -123,12 +207,15 @@
                 <th>Hostname</th>
                 <th>MAC</th>
                 <th>IP</th>
-                <th>Last seen</th>
+                <th>Interface</th>
+                <th>Online</th>
+                <th>First seen</th>
+                <th>Last activity</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody id="client-rows">
-              <tr><td colspan="7" class="empty">Waiting for data…</td></tr>
+              <tr><td colspan="10" class="empty">Waiting for data…</td></tr>
             </tbody>
           </table>
         </div>
