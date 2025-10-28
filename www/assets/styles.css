@@ -297,7 +297,7 @@ body {
 .client-table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 1200px;
+  min-width: 1500px;
 }
 
 .client-table th,

@@ -94,21 +94,32 @@ def check_nft(cfg: Dict[str, Any]) -> list[str]:
     chain = cfg.get("nft_chain")
     block_set = cfg.get("nft_block_set")
     allow_set = cfg.get("nft_allow_set")
+    internet_set = cfg.get("nft_internet_block_set")
+    family = (cfg.get("nft_family") or "inet").strip() or "inet"
     if not table or not chain:
         checks.append("NFT table/chain not configured")
         return checks
-    code, output = run_command([nft, "list", "table", table])
-    checks.append(f"nft table '{table}': {'ok' if code == 0 else 'missing'}")
+    code, output = run_command([nft, "list", "table", family, table])
+    checks.append(
+        f"nft table '{table}' ({family}): {'ok' if code == 0 else 'missing'}"
+    )
     if code != 0:
         checks.append(output)
     if block_set:
-        code, output = run_command([nft, "list", "set", table, block_set])
+        code, output = run_command([nft, "list", "set", family, table, block_set])
         checks.append(f"block set '{block_set}': {'ok' if code == 0 else 'missing'}")
         if code != 0:
             checks.append(output)
     if allow_set:
-        code, output = run_command([nft, "list", "set", table, allow_set])
+        code, output = run_command([nft, "list", "set", family, table, allow_set])
         checks.append(f"allow set '{allow_set}': {'ok' if code == 0 else 'missing'}")
+        if code != 0:
+            checks.append(output)
+    if internet_set:
+        code, output = run_command([nft, "list", "set", family, table, internet_set])
+        checks.append(
+            f"internet set '{internet_set}': {'ok' if code == 0 else 'missing'}"
+        )
         if code != 0:
             checks.append(output)
     return checks

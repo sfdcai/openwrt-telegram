@@ -232,6 +232,10 @@
     }
     form.querySelector('#client-state').value = config.client_state_file || '';
     form.querySelector('#nft-table').value = config.nft_table || '';
+    const nftFamily = form.querySelector('#nft-family');
+    if (nftFamily) {
+      nftFamily.value = config.nft_family || 'inet';
+    }
     form.querySelector('#nft-chain').value = config.nft_chain || '';
     form.querySelector('#nft-block').value = config.nft_block_set || '';
     form.querySelector('#nft-allow').value = config.nft_allow_set || '';
@@ -426,6 +430,7 @@
       notification_schedule: elements.configForm.querySelector('#notification-schedule').value,
       client_state_file: elements.configForm.querySelector('#client-state').value,
       nft_table: elements.configForm.querySelector('#nft-table').value,
+      nft_family: elements.configForm.querySelector('#nft-family').value,
       nft_chain: elements.configForm.querySelector('#nft-chain').value,
       nft_block_set: elements.configForm.querySelector('#nft-block').value,
       nft_allow_set: elements.configForm.querySelector('#nft-allow').value,

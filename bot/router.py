@@ -85,6 +85,7 @@ class RouterController:
         self.state_path = Path(cfg.get("client_state_file") or (base_dir / "state" / "clients.json"))
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self.nft_binary = cfg.get("nft_binary", "nft")
+        self.nft_family = (cfg.get("nft_family") or "inet").strip() or "inet"
         self.nft_table = cfg.get("nft_table", "telebot")
         self.nft_chain = cfg.get("nft_chain", "client_guard")
         self.nft_block_set = cfg.get("nft_block_set", "blocked_clients")
@@ -96,6 +97,18 @@ class RouterController:
         else:
             wan_candidates = [str(item).strip() for item in wan_cfg if str(item).strip()]
         self.wan_interfaces: list[str] = [iface for iface in wan_candidates if iface]
+        detected_wan = self._detect_wan_interfaces()
+        for iface in detected_wan:
+            if iface and iface not in self.wan_interfaces:
+                self.wan_interfaces.append(iface)
+        if self.wan_interfaces:
+            self.wan_interfaces = sorted(dict.fromkeys(self.wan_interfaces))
+        if detected_wan:
+            self._logger(
+                "Detected WAN interfaces: " + ", ".join(sorted(detected_wan)),
+                self.log_file,
+                "DEBUG",
+            )
         self.whitelist = {_normalize_mac(mac) for mac in cfg.get("client_whitelist", []) if _normalize_mac(mac)}
         self.state: Dict[str, Any] = {"clients": {}}
         self._nft_ready = False
@@ -164,6 +177,58 @@ class RouterController:
         seq = int(self.state.get("sequence", 999)) + 1
         self.state["sequence"] = seq
         return f"C{seq:04d}"
+
+    def _detect_wan_interfaces(self) -> list[str]:
+        interfaces: list[str] = []
+        ubus = shutil.which("ubus")
+        if ubus:
+            for logical in ("wan", "wan6"):
+                try:
+                    output = subprocess.check_output(
+                        [ubus, "call", f"network.interface.{logical}", "status"],
+                        stderr=subprocess.DEVNULL,
+                        timeout=5,
+                    )
+                except subprocess.CalledProcessError:
+                    continue
+                except Exception as exc:  # pragma: no cover - best effort
+                    self._logger(
+                        f"Failed to query ubus for {logical}: {exc}",
+                        self.log_file,
+                        "DEBUG",
+                    )
+                    continue
+                try:
+                    data = json.loads(output.decode("utf-8"))
+                except Exception:
+                    continue
+                for key in ("device", "l3_device", "ifname"):
+                    value = data.get(key)
+                    if isinstance(value, str) and value:
+                        interfaces.append(value.strip())
+        if not interfaces:
+            ip_cmd = shutil.which("ip")
+            if ip_cmd:
+                try:
+                    output = subprocess.check_output(
+                        [ip_cmd, "-o", "route", "show", "default"],
+                        stderr=subprocess.DEVNULL,
+                        timeout=5,
+                    )
+                    for line in output.decode("utf-8").splitlines():
+                        parts = line.split()
+                        if "dev" in parts:
+                            idx = parts.index("dev")
+                            if idx + 1 < len(parts):
+                                interfaces.append(parts[idx + 1])
+                except Exception:
+                    pass
+        normalised = []
+        for iface in interfaces:
+            iface_clean = iface.strip()
+            if iface_clean and iface_clean not in normalised:
+                normalised.append(iface_clean)
+        return normalised
 
     # ------------------------------------------------------------------
     # Discovery
@@ -341,13 +406,13 @@ class RouterController:
             return
         try:
             subprocess.run(
-                [self.nft_binary, "list", "table", "inet", self.nft_table],
+                [self.nft_binary, "list", "table", self.nft_family, self.nft_table],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=False,
             )
             subprocess.run(
-                [self.nft_binary, "add", "table", "inet", self.nft_table],
+                [self.nft_binary, "add", "table", self.nft_family, self.nft_table],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=False,
@@ -369,27 +434,30 @@ class RouterController:
             self._logger(f"Failed to initialise nftables: {exc}", self.log_file, "ERROR")
 
     def _ensure_set(self, name: str) -> None:
-        script = f"add set inet {self.nft_table} {name} {{ type etheraddr; size 65535; }}"
+        script = (
+            f"add set {self.nft_family} {self.nft_table} {name} "
+            "{ type etheraddr; size 65535; }"
+        )
         self._run_nft(script)
 
     def _ensure_chain(self) -> None:
         script = (
-            f"add chain inet {self.nft_table} {self.nft_chain} "
-            "{ type filter hook forward priority 0; policy accept; }"
+            f"add chain {self.nft_family} {self.nft_table} {self.nft_chain} "
+            "{ type filter hook forward priority -150; policy accept; }"
         )
         self._run_nft(script)
 
     def _ensure_drop_rule(self) -> None:
         if self.nft_block_set:
             script = (
-                f"add rule inet {self.nft_table} {self.nft_chain} "
+                f"add rule {self.nft_family} {self.nft_table} {self.nft_chain} "
                 f"ether saddr @${self.nft_block_set} drop"
             )
             self._run_nft(script)
         if self.nft_internet_block_set and self.wan_interfaces:
-            iface_list = " ".join(f'"{iface}"' for iface in self.wan_interfaces)
+            iface_list = ", ".join(f'"{iface}"' for iface in self.wan_interfaces)
             script = (
-                f"add rule inet {self.nft_table} {self.nft_chain} "
+                f"add rule {self.nft_family} {self.nft_table} {self.nft_chain} "
                 f"ether saddr @${self.nft_internet_block_set} oifname {{ {iface_list} }} drop"
             )
             self._run_nft(script)
@@ -400,7 +468,7 @@ class RouterController:
             include_path.parent.mkdir(parents=True, exist_ok=True)
             lines = [
                 "# Autogenerated by openwrt-telegram RouterController",
-                f"table inet {self.nft_table} {{",
+                f"table {self.nft_family} {self.nft_table} {{",
                 f"    set {self.nft_block_set} {{ type etheraddr; flags interval; }}",
                 f"    set {self.nft_allow_set} {{ type etheraddr; flags interval; }}",
             ]
@@ -411,7 +479,7 @@ class RouterController:
             lines.extend(
                 [
                     f"    chain {self.nft_chain} {{",
-                    "        type filter hook forward priority 0; policy accept;",
+                    "        type filter hook forward priority -150; policy accept;",
                     f"        ether saddr @{self.nft_block_set} drop",
                 ]
             )
@@ -496,13 +564,23 @@ class RouterController:
         if not self._nft_supported:
             return
         try:
-            subprocess.run(
+            result = subprocess.run(
                 [self.nft_binary, "-f", "-"],
                 input=(script + "\n").encode("utf-8"),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 check=False,
             )
+            if result.returncode != 0:
+                stderr = result.stderr.decode("utf-8", errors="ignore").strip()
+                stdout = result.stdout.decode("utf-8", errors="ignore").strip()
+                details = stderr or stdout or f"exit {result.returncode}"
+                snippet = script.replace("\n", " ")[:160]
+                self._logger(
+                    f"nft command failed ({details}): {snippet}",
+                    self.log_file,
+                    "WARNING",
+                )
         except Exception as exc:  # pragma: no cover
             self._logger(f"nft command failed: {exc}", self.log_file, "ERROR")
 
@@ -562,14 +640,14 @@ class RouterController:
         if not set_name:
             return
         self.ensure_nft()
-        script = f"add element inet {self.nft_table} {set_name} {{ {mac} }}"
+        script = f"add element {self.nft_family} {self.nft_table} {set_name} {{ {mac} }}"
         self._run_nft(script)
 
     def _nft_remove(self, set_name: str, mac: str) -> None:
         if not set_name:
             return
         self.ensure_nft()
-        script = f"delete element inet {self.nft_table} {set_name} {{ {mac} }}"
+        script = f"delete element {self.nft_family} {self.nft_table} {set_name} {{ {mac} }}"
         self._run_nft(script)
 
     def _nft_resource_exists(self, kind: str, name: str | None = None) -> bool:
@@ -578,11 +656,11 @@ class RouterController:
         if kind == "table":
             if not self.nft_table:
                 return False
-            command = [self.nft_binary, "list", "table", "inet", self.nft_table]
+            command = [self.nft_binary, "list", "table", self.nft_family, self.nft_table]
         elif kind == "set":
             if not self.nft_table or not name:
                 return False
-            command = [self.nft_binary, "list", "set", "inet", self.nft_table, name]
+            command = [self.nft_binary, "list", "set", self.nft_family, self.nft_table, name]
         else:
             return False
         try:
@@ -623,6 +701,7 @@ class RouterController:
         nft_status = {
             "supported": self._nft_supported,
             "ready": self._nft_ready,
+            "family": self.nft_family,
             "table_exists": self._nft_resource_exists("table"),
             "block_set_exists": self._nft_resource_exists("set", self.nft_block_set),
             "allow_set_exists": self._nft_resource_exists("set", self.nft_allow_set),

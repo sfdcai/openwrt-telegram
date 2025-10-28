@@ -22,6 +22,7 @@
   "update_timeout": 600,
   "update_zip_url": "",
   "nft_binary": "nft",
+  "nft_family": "inet",
   "dhcp_leases_path": "/tmp/dhcp.leases",
   "ip_neigh_command": "ip neigh show dev br-lan",
   "client_whitelist": []

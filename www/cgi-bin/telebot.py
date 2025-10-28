@@ -333,6 +333,7 @@ def save_config(manager: ConfigManager, payload: Dict[str, Any]) -> Dict[str, An
         "nft_block_set",
         "nft_allow_set",
         "nft_internet_block_set",
+        "nft_family",
         "nft_binary",
         "firewall_include_path",
         "firewall_include_section",
@@ -341,6 +342,8 @@ def save_config(manager: ConfigManager, payload: Dict[str, Any]) -> Dict[str, An
     ):
         if key in payload and payload[key] is not None:
             value = str(payload[key]).strip()
+            if key == "nft_family" and not value:
+                value = "inet"
             if key == "version_endpoint" and value != updated.get(key, ""):
                 invalidate_cache = True
             updated[key] = value

@@ -113,8 +113,13 @@ Edit `/opt/openwrt-telebot/config/config.json`:
 - `nft_block_set` / `nft_allow_set` / `nft_internet_block_set` – nftables sets
   holding fully blocked, approved and WAN-only-blocked MAC addresses.
 - `nft_binary` – Path to the `nft` executable (defaults to `nft`).
+- `nft_family` – nftables family used when creating tables and sets (defaults
+  to `inet`).
 - `wan_interfaces` – Comma-separated list of WAN interface names used when
   applying WAN-only client blocks.
+  The controller now auto-detects active WAN devices (via `ubus` or
+  `ip route`) and appends them to this list so PPPoE adapters such as
+  `pppoe-wan` are blocked correctly without manual tuning.
 - `firewall_include_path` / `firewall_include_section` – Where the generated
   nftables include is stored and how it is registered with `uci` so the
   TeleBot rule appears under **Network → Firewall**.
