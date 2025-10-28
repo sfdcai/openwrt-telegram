@@ -12,6 +12,9 @@ and helper scripts for integrating with router events and shell plugins.
   directory to expose router functionality as Telegram commands.
 - **Beautiful web UI** hosted from uhttpd for real-time status, configuration
   editing, log inspection, plugin execution and manual chat messaging.
+- **One-click OTA updates** – trigger the bundled installer from the dashboard,
+  watch the log inline, and automatically restart the bot when the deployment
+  succeeds.
 - **Self-healing installer** that works from an extracted release folder or
   downloads the latest ZIP automatically, deploys to `/opt/openwrt-telebot`, and
   refreshes the uhttpd assets so stale UI files disappear.
@@ -99,18 +102,26 @@ Edit `/opt/openwrt-telebot/config/config.json`:
   available release (defaults to the GitHub Releases API).
 - `version_cache_ttl` – How long, in seconds, the remote version lookup is
   cached before refreshing.
+- `update_timeout` – Maximum runtime (seconds) for the in-dashboard update
+  button before the installer is aborted (defaults to 600 seconds).
+- `update_zip_url` – Optional override for the release archive URL downloaded
+  during OTA updates (leave empty to use the latest GitHub release).
 - `client_state_file` – JSON file that stores discovered clients and their
   approval status (defaults to `state/clients.json`).
 - `nft_table` / `nft_chain` – nftables objects that TeleBot manages to block
   unapproved MAC addresses on the forward hook.
 - `nft_block_set` / `nft_allow_set` / `nft_internet_block_set` – nftables sets
   holding fully blocked, approved and WAN-only-blocked MAC addresses.
+- `nft_binary` – Path to the `nft` executable (defaults to `nft`).
 - `wan_interfaces` – Comma-separated list of WAN interface names used when
   applying WAN-only client blocks.
-- `client_whitelist` – List of MAC addresses that bypass approval entirely.
 - `firewall_include_path` / `firewall_include_section` – Where the generated
   nftables include is stored and how it is registered with `uci` so the
   TeleBot rule appears under **Network → Firewall**.
+- `client_whitelist` – List of MAC addresses that bypass approval entirely.
+- `dhcp_leases_path` – Primary DHCP lease file used for client discovery.
+- `ip_neigh_command` – Override the `ip neigh` command used to map MAC
+  addresses to interfaces (defaults to `ip neigh show dev br-lan`).
 - `enhanced_notifications` – Set to `true` (default) to send HTML-formatted
   Telegram messages with icons, device cards and status graphs.
 - `notification_schedule` – Optional list of `HH:MM` entries (router local
@@ -129,7 +140,17 @@ devices.
 
 Once authenticated, the header displays the installed version, the latest
 release detected online, and a colour-coded badge that highlights when an update
-is available.
+is available. Use the **Update** button in the status card to download, extract
+and install the newest release without touching the shell – the UI captures the
+installer log and automatically attempts to restart the init script afterward.
+
+### Enhanced clients table
+
+The **Network clients** table now stretches across the viewport with columns for
+interface, online status, first-seen timestamps and relative activity, making it
+easy to spot devices that are paused, WAN-only blocked, or awaiting approval.
+Inline action buttons remain grouped with each client and adapt based on the
+current status.
 
 ### Enhanced Telegram notifications
 

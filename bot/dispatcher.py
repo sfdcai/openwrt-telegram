@@ -64,32 +64,77 @@ class Dispatcher:
             "/diagnostics": self._cmd_diagnostics,
         }
 
+        self.command_overview = [
+            {"command": "/menu", "description": "Interactive control centre", "icon": "📋"},
+            {"command": "/ping", "description": "Heartbeat check", "icon": "🏓"},
+            {"command": "/status", "description": "System snapshot", "icon": "📊"},
+            {"command": "/plugins", "description": "List installed shell helpers", "icon": "🧩"},
+            {
+                "command": "/run",
+                "description": "Execute a plugin",
+                "icon": "▶️",
+                "usage": "/run <plugin> [args]",
+            },
+            {
+                "command": "/log",
+                "description": "Tail the bot log",
+                "icon": "🪵",
+                "usage": "/log [lines]",
+            },
+            {"command": "/whoami", "description": "Show your identifiers", "icon": "🪪"},
+            {"command": "/clients", "description": "Known devices", "icon": "🧑‍💻"},
+            {"command": "/router", "description": "Router guard summary", "icon": "🛡️"},
+            {
+                "command": "/approve",
+                "description": "Approve a device",
+                "icon": "✅",
+                "usage": "/approve <id|mac|ip>",
+            },
+            {
+                "command": "/block",
+                "description": "Block WAN-only or full network",
+                "icon": "🚫",
+                "usage": "/block <id|mac|ip> [internet|network]",
+            },
+            {
+                "command": "/pause",
+                "description": "Temporarily suspend a client",
+                "icon": "⏸",
+                "usage": "/pause <id|mac|ip>",
+            },
+            {
+                "command": "/resume",
+                "description": "Resume a paused client",
+                "icon": "▶️",
+                "usage": "/resume <id|mac|ip>",
+            },
+            {
+                "command": "/whitelist",
+                "description": "Always allow a device",
+                "icon": "⭐",
+                "usage": "/whitelist <id|mac|ip>",
+            },
+            {
+                "command": "/forget",
+                "description": "Remove device from registry",
+                "icon": "🧹",
+                "usage": "/forget <id|mac>",
+            },
+            {"command": "/diag", "description": "Deployment diagnostics", "icon": "🩺", "usage": "/diag"},
+        ]
+
     # ------------------------------------------------------------------
     # Command handlers
 
     def _cmd_help(self, user: int, chat: int, message: int, args: list[str]) -> List[str]:
+        commands = self.command_overview
         if self.enhanced:
-            commands = [
-                ("📋", "/menu", "Interactive control centre"),
-                ("🏓", "/ping", "Heartbeat check"),
-                ("📊", "/status", "System snapshot"),
-                ("🧩", "/plugins", "List installed shell helpers"),
-                ("▶️", "/run &lt;plugin&gt; [args]", "Execute a plugin"),
-                ("🪵", "/log [lines]", "Tail the bot log"),
-                ("🪪", "/whoami", "Show your identifiers"),
-                ("🧑‍💻", "/clients", "Known devices"),
-                ("🛡️", "/router", "Router guard summary"),
-                ("✅", "/approve &lt;id|mac|ip&gt;", "Allow a device"),
-                ("🚫", "/block &lt;id|mac|ip&gt; [internet|network]", "Block WAN-only or full network"),
-                ("⏸", "/pause &lt;id|mac|ip&gt;", "Temporarily suspend"),
-                ("▶️", "/resume &lt;id|mac|ip&gt;", "Resume a client"),
-                ("⭐", "/whitelist &lt;id|mac|ip&gt;", "Always allow a device"),
-                ("🧹", "/forget &lt;id|mac&gt;", "Remove from registry"),
-                ("🩺", "/diag", "Deployment diagnostics"),
-            ]
             lines = ["<b>🧭 Command navigator</b>"]
-            for icon, command, description in commands:
-                lines.append(f"{icon} <code>{command}</code> — {html.escape(description)}")
+            for entry in commands:
+                icon = entry.get("icon") or "•"
+                command = entry.get("usage") or entry["command"]
+                description = html.escape(entry.get("description", ""))
+                lines.append(f"{icon} <code>{command}</code> — {description}")
             plugins = self._plugin_summary()
             if plugins:
                 lines.append("")
@@ -98,26 +143,24 @@ class Dispatcher:
                     lines.append(f"• {html.escape(entry.strip())}")
             return ["\n".join(lines)]
 
-        available = [
-            "Commands:",
-            "/menu - interactive control centre",
-            "/ping - simple heartbeat",
-            "/status - system information",
-            "/plugins - list available shell plugins",
-            "/run <plugin> [args] - execute a plugin",
-            "/log [lines] - tail the bot log",
-            "/whoami - display your identifiers",
-            "/clients - list known devices",
-            "/router - router guard summary",
-            "/approve <id|mac|ip> - allow a device",
-            "/block <id|mac|ip> [internet|network] - block WAN-only or the entire network",
-            "/pause <id|mac|ip> - temporarily suspend a client",
-            "/resume <id|mac|ip> - restore a paused client",
-            "/whitelist <id|mac|ip> - always allow a device",
-            "/forget <id|mac> - remove device from registry",
-            "/diag - run deployment diagnostics",
-        ]
+        available = ["Commands:"]
+        for entry in commands:
+            command = entry.get("usage") or entry["command"]
+            description = entry.get("description", "")
+            available.append(f"{command} - {description}")
         return ["\n".join(available + self._plugin_summary())]
+
+    def telegram_commands(self) -> list[dict[str, str]]:
+        commands: list[dict[str, str]] = []
+        for entry in self.command_overview:
+            if not entry.get("register", True):
+                continue
+            command = entry.get("command", "").lstrip("/")
+            if not command:
+                continue
+            description = entry.get("description", "")[:256]
+            commands.append({"command": command, "description": description})
+        return commands
 
     def _cmd_menu(self, user: int, chat: int, message: int, args: list[str]) -> List[ResponseType]:
         return [self._menu_payload()]
@@ -979,13 +1022,18 @@ class Dispatcher:
 
     def _plugin_summary(self) -> list[str]:
         summary: list[str] = []
-        for plugin in self.available_plugins():
+        plugins = self.available_plugins()
+        for index, plugin in enumerate(plugins):
             label = plugin["command"]
             description = plugin.get("description")
             if description:
                 summary.append(f"  {label} — {description}")
             else:
                 summary.append(f"  {label}")
+            if index >= 24 and len(plugins) > 25:
+                remaining = len(plugins) - 25
+                summary.append(f"  … {remaining} more plugin{'s' if remaining != 1 else ''}")
+                break
         return summary
 
     def _client_action(

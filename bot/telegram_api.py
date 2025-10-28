@@ -136,3 +136,10 @@ class TelegramAPI:
         # Stdlib-only upload is cumbersome; instead, notify the user where the file lives.
         message = f"[file] {caption}: {file_path}"
         return self.send_message(chat_id, message)
+
+    def set_my_commands(self, commands: list[dict[str, str]]) -> Dict[str, Any]:
+        payload = json.dumps(commands, separators=(",", ":"))
+        response = self._post("setMyCommands", {"commands": payload})
+        if not isinstance(response, dict) or not response.get("ok"):
+            raise RuntimeError(f"setMyCommands failed: {response}")
+        return response

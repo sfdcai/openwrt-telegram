@@ -250,6 +250,7 @@ def get_dispatcher(cfg: Dict[str, Any], router: RouterController | None = None) 
         logger=lambda _m: None,
         default_chat=cfg.get("chat_id_default"),
         router=router,
+        enhanced_notifications=bool(cfg.get("enhanced_notifications")),
     )
     return dispatcher
 
@@ -325,12 +326,18 @@ def save_config(manager: ConfigManager, payload: Dict[str, Any]) -> Dict[str, An
         "ui_api_token",
         "ui_base_url",
         "version_endpoint",
+        "update_zip_url",
         "client_state_file",
         "nft_table",
         "nft_chain",
         "nft_block_set",
         "nft_allow_set",
         "nft_internet_block_set",
+        "nft_binary",
+        "firewall_include_path",
+        "firewall_include_section",
+        "dhcp_leases_path",
+        "ip_neigh_command",
     ):
         if key in payload and payload[key] is not None:
             value = str(payload[key]).strip()
@@ -381,6 +388,16 @@ def save_config(manager: ConfigManager, payload: Dict[str, Any]) -> Dict[str, An
             invalidate_cache = True
     else:
         updated["version_cache_ttl"] = existing_ttl
+
+    if "update_timeout" in payload:
+        try:
+            timeout_value = int(payload.get("update_timeout", 0) or 0)
+        except (TypeError, ValueError):
+            timeout_value = 0
+        if timeout_value > 0:
+            updated["update_timeout"] = max(120, timeout_value)
+        elif "update_timeout" in updated:
+            del updated["update_timeout"]
 
     if "enhanced_notifications" in payload:
         updated["enhanced_notifications"] = bool(payload.get("enhanced_notifications"))
@@ -439,6 +456,72 @@ def control_service(command: str) -> None:
     if not service.exists():
         raise RuntimeError("Init script not installed")
     subprocess.check_call([str(service), command])
+
+
+def perform_update(cfg: Dict[str, Any], log_file: str | None = None) -> Dict[str, Any]:
+    script = BASE_DIR / "install.sh"
+    if not script.exists():
+        raise RuntimeError("Installer script not found")
+    env = os.environ.copy()
+    env.setdefault("TELEBOT_BASE", str(BASE_DIR))
+    env.setdefault("TELEBOT_CONFIG", str(CONFIG_PATH))
+    zip_override = str(cfg.get("update_zip_url") or "").strip()
+    if zip_override:
+        env["ZIP_URL"] = zip_override
+    command = ["/bin/sh", str(script), "--target", str(BASE_DIR), "--force-download"]
+    try:
+        timeout = max(120, int(cfg.get("update_timeout") or 600))
+    except (TypeError, ValueError):
+        timeout = 600
+    log("UI-triggered update started", log_file)
+    started = time.time()
+    try:
+        output = subprocess.check_output(
+            command,
+            stderr=subprocess.STDOUT,
+            env=env,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        log_exception("Update timed out", exc, log_file)
+        raise RuntimeError(f"Update timed out after {timeout} seconds") from exc
+    except subprocess.CalledProcessError as exc:
+        message = f"Installer failed with exit code {exc.returncode}"
+        details = ""
+        if exc.output:
+            details = exc.output.decode("utf-8", errors="ignore").strip()
+        if details:
+            message += f": {details.splitlines()[-1]}"
+        log(message, log_file, level="ERROR")
+        raise RuntimeError(message) from exc
+    except Exception as exc:  # pragma: no cover - defensive
+        log_exception("Update failed", exc, log_file)
+        raise RuntimeError(f"Update failed: {exc}") from exc
+    finally:
+        invalidate_remote_cache()
+
+    log("Installer completed successfully", log_file)
+    text = output.decode("utf-8", errors="ignore").strip()
+    if not text:
+        text = "Installer completed with no output."
+    lines = text.splitlines()
+    if len(lines) > 200:
+        text = "\n".join(lines[-200:])
+    duration = time.time() - started
+    result = {
+        "log": text,
+        "duration": duration,
+        "version": read_version(),
+    }
+    try:
+        control_service("restart")
+    except Exception as exc:  # pragma: no cover - init script optional
+        note = f"Service restart skipped: {exc}"
+        log(note, log_file, level="WARNING")
+        result["restart"] = note
+    else:
+        result["restart"] = "Service restart requested."
+    return result
 
 
 def main() -> None:
@@ -585,6 +668,9 @@ def main() -> None:
                 raise RuntimeError("Unsupported command")
             control_service(command)
             respond(200, {"ok": True})
+        elif action == "update":
+            result = perform_update(cfg, log_file)
+            respond(200, {"ok": True, **result})
         else:
             respond(400, {"ok": False, "error": f"Unknown action: {action}"})
     except Exception as exc:
